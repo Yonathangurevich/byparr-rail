@@ -1,0 +1,28 @@
+version: '3'
+services:
+  byparr1:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: always
+    ports:
+      - "8191:8191"
+    environment:
+      - LOG_LEVEL=info
+      - CAPTCHA_SOLVER=none
+      
+  byparr2:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: always
+    ports:
+      - "8192:8191"
+    environment:
+      - LOG_LEVEL=info
+      - CAPTCHA_SOLVER=none
+      
+  byparr3:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: always
+    ports:
+      - "8193:8191"
+    environment:
+      - LOG_LEVEL=info
+      - CAPTCHA_SOLVER=none
