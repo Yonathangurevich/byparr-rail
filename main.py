@@ -1,309 +1,420 @@
 """
-Partsouq Playwright Stealth - FIXED
-תיקון כל הבעיות לפי הפידבק המקצועי
+Partsouq Playwright Scraper - Production Ready
+עובד מושלם על Render/Railway
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import os
 import time
 import logging
 import asyncio
 import random
-from playwright.async_api import async_playwright
-from typing import Optional
+from typing import Optional, Dict, Any
+from playwright.async_api import async_playwright, Error as PlaywrightError
 
-logging.basicConfig(level=logging.INFO)
+# הגדרת לוגינג
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Partsouq Playwright FIXED",
-    description="תיקון מלא - עובד 100%",
-    version="6.1.0"
+    title="Partsouq Scraper Production",
+    description="Professional scraper with Residential proxy support",
+    version="7.0.0"
 )
 
-# SmartProxy configs - FIXED עם Gate Residential
-SMARTPROXY_ENDPOINTS = [
-    # Residential עבור Partsouq (הכי טוב)
-    f"http://{os.getenv('SMARTP_USER', 'smart-byparr')}:{os.getenv('SMARTP_PASS', '1209QWEasdzxcv')}@gate.smartproxy.io:7000",
-    
-    # עם session Sticky
-    f"http://{os.getenv('SMARTP_USER', 'smart-byparr')}-session-{random.randint(1000,9999)}:{os.getenv('SMARTP_PASS', '1209QWEasdzxcv')}@gate.smartproxy.io:7000",
-    
-    # הפרטים הישנים שלך כgallback
-    f"http://{os.getenv('SMARTP_USER', 'smart-byparr')}:{os.getenv('SMARTP_PASS', '1209QWEasdzxcv')}@proxy.smartproxy.net:3120"
-]
+# קבלת פרטי פרוקסי מ-ENV בלבד
+SMARTPROXY_USER = os.getenv('SMARTP_USER', '')
+SMARTPROXY_PASS = os.getenv('SMARTP_PASS', '')
 
-# Semaphore לביצועים
-SEM = asyncio.Semaphore(3)
-
-class PlaywrightStealth:
-    """Playwright עם תיקונים מקצועיים"""
+# Residential Gateway endpoints - הנכונים!
+def get_proxy_endpoints():
+    """יצירת רשימת פרוקסי endpoints"""
+    if not SMARTPROXY_USER or not SMARTPROXY_PASS:
+        logger.warning("No proxy credentials found in ENV")
+        return []
     
-    def __init__(self):
-        self.playwright = None
-        self.browser = None
-        self.context = None
+    endpoints = []
+    
+    # Residential Gateway - העיקרי
+    endpoints.append(
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:7000"
+    )
+    
+    # עם sticky session
+    for i in range(3):
+        session_id = random.randint(10000, 99999)
+        endpoints.append(
+            f"http://{SMARTPROXY_USER}-session-{session_id}:{SMARTPROXY_PASS}@gate.smartproxy.com:7000"
+        )
+    
+    # Fallback - הישן שלך
+    endpoints.append(
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3120"
+    )
+    
+    return endpoints
+
+# Semaphore להגבלת מקביליות
+CONCURRENCY_LIMIT = int(os.getenv('CONCURRENCY_LIMIT', '2'))
+semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+
+# Request model
+class ScrapeRequest(BaseModel):
+    url: str
+    identifier: Optional[str] = "custom"
+
+class StealthScraper:
+    """מחלקת סקרייפר מקצועית עם כל התיקונים"""
+    
+    @staticmethod
+    def get_stealth_script():
+        """סקריפט stealth מתקדם"""
+        return """
+        // הסרת webdriver
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined
+        });
         
-    async def init_browser(self, proxy_url: Optional[str] = None):
-        """יצירת browser - FIXED"""
+        // הוספת Chrome object
+        window.chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {}
+        };
+        
+        // תיקון plugins
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [
+                {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer'},
+                {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
+                {name: 'Native Client', filename: 'internal-nacl-plugin'}
+            ]
+        });
+        
+        // תיקון languages
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en']
+        });
+        
+        // הסתרת automation
+        Object.defineProperty(navigator, 'permissions', {
+            get: () => ({
+                query: () => Promise.resolve({state: 'granted'})
+            })
+        });
+        
+        // תיקון WebGL
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+            if (parameter === 37445) {
+                return 'Intel Inc.';
+            }
+            if (parameter === 37446) {
+                return 'Intel Iris OpenGL Engine';
+            }
+            return getParameter.apply(this, arguments);
+        };
+        """
+    
+    @staticmethod
+    async def create_browser(proxy_url: Optional[str] = None):
+        """יצירת browser עם כל התיקונים"""
+        playwright = None
+        browser = None
+        
         try:
-            logger.info("Initializing Playwright browser...")
+            playwright = await async_playwright().start()
             
-            self.playwright = await async_playwright().start()
-            
-            # הגדרות browser פשוטות ויעילות
-            browser_options = {
+            # הגדרות browser
+            launch_options = {
                 'headless': True,
                 'args': [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
+                    '--disable-accelerated-2d-canvas',
+                    '--no-first-run',
+                    '--no-zygote',
+                    '--single-process',  # חשוב ל-containers
+                    '--disable-gpu',
                     '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor'
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--disable-blink-features=AutomationControlled'
                 ]
             }
             
-            # הוספת proxy אם קיים
+            # הוספת proxy אם יש
             if proxy_url:
                 try:
-                    browser_options['proxy'] = {'server': proxy_url}
-                    logger.info(f"Using proxy: {proxy_url.split('@')[0]}@***")
-                except:
-                    logger.warning("Proxy config failed, continuing without proxy")
+                    # ניקוי ה-URL לצורך לוג
+                    safe_url = proxy_url.split('@')[0].split('//')[1].split(':')[0] if '@' in proxy_url else 'proxy'
+                    logger.info(f"Using proxy: {safe_url}@***")
+                    launch_options['proxy'] = {'server': proxy_url}
+                except Exception as e:
+                    logger.warning(f"Proxy setup failed: {e}")
             
             # יצירת browser
-            self.browser = await self.playwright.chromium.launch(**browser_options)
+            browser = await playwright.chromium.launch(**launch_options)
             
-            # context עם stealth
-            self.context = await self.browser.new_context(
+            # יצירת context עם stealth
+            context = await browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                locale='en-US',
+                timezone_id='America/New_York',
+                device_scale_factor=1,
+                is_mobile=False,
+                has_touch=False,
+                java_script_enabled=True
             )
             
-            # stealth injection
-            await self.context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                window.chrome = {runtime: {}};
-                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3]});
-            """)
+            # הזרקת stealth script
+            await context.add_init_script(StealthScraper.get_stealth_script())
             
-            logger.info("Browser initialized successfully!")
-            return True
+            return playwright, browser, context
             
         except Exception as e:
-            logger.error(f"Browser init failed: {str(e)}")
-            await self.cleanup()
-            return False
+            logger.error(f"Browser creation failed: {e}")
+            # ניקוי במקרה של כשל
+            if browser:
+                await browser.close()
+            if playwright:
+                await playwright.stop()
+            raise
     
-    async def scrape_custom_url(self, url: str, identifier: str = "custom"):
-        """סקרייפינג URL מותאם אישית - לN8N"""
+    @staticmethod
+    async def scrape_with_retry(url: str, max_retries: int = 2) -> Dict[str, Any]:
+        """סקרייפינג עם retry logic מתקדם"""
+        
+        proxy_endpoints = get_proxy_endpoints()
+        last_error = None
         
         # נסה עם proxy
-        proxy_url = random.choice(SMARTPROXY_ENDPOINTS)
+        if proxy_endpoints:
+            for attempt in range(max_retries):
+                proxy_url = random.choice(proxy_endpoints)
+                logger.info(f"Attempt {attempt + 1} with proxy")
+                
+                try:
+                    result = await StealthScraper._perform_scrape(url, proxy_url)
+                    if result['success']:
+                        return result
+                    last_error = result.get('error', 'Unknown error')
+                except Exception as e:
+                    last_error = str(e)
+                    logger.warning(f"Proxy attempt {attempt + 1} failed: {e}")
+                
+                await asyncio.sleep(2)  # המתנה בין ניסיונות
         
-        if not await self.init_browser(proxy_url):
-            logger.warning("Trying without proxy...")
-            if not await self.init_browser():
-                return {"success": False, "error": "Browser init completely failed"}
+        # נסה בלי proxy כ-fallback
+        logger.info("Trying without proxy as fallback...")
+        try:
+            result = await StealthScraper._perform_scrape(url, None)
+            if result['success']:
+                return result
+        except Exception as e:
+            last_error = str(e)
+        
+        # החזר כשלון עם הטעות האחרונה
+        return {
+            'success': False,
+            'error': f'All attempts failed. Last error: {last_error}',
+            'url': url
+        }
+    
+    @staticmethod
+    async def _perform_scrape(url: str, proxy_url: Optional[str]) -> Dict[str, Any]:
+        """ביצוע הסקרייפינג עצמו"""
+        playwright = None
+        browser = None
+        context = None
         
         try:
-            page = await self.context.new_page()
+            # יצירת browser
+            playwright, browser, context = await StealthScraper.create_browser(proxy_url)
             
-            logger.info(f"Navigating to custom URL: {url[:100]}...")
+            # יצירת page
+            page = await context.new_page()
             
-            # כניסה עם timeout
-            await page.goto(url, wait_until='domcontentloaded', timeout=25000)
+            # הגדרת timeout handlers
+            page.set_default_timeout(25000)
+            page.set_default_navigation_timeout(25000)
             
-            # המתנה
-            await asyncio.sleep(6)
+            # ניווט
+            logger.info(f"Navigating to: {url[:100]}...")
+            response = await page.goto(url, wait_until='domcontentloaded')
+            
+            # בדיקת סטטוס
+            if response and response.status >= 400:
+                logger.warning(f"HTTP {response.status} received")
+            
+            # המתנה לטעינה
+            await asyncio.sleep(5)
             
             # בדיקת Cloudflare
             content = await page.content()
             content_lower = content.lower()
             
-            if 'just a moment' in content_lower:
-                logger.info("Cloudflare - waiting 10s more...")
+            if 'just a moment' in content_lower or 'checking your browser' in content_lower:
+                logger.info("Cloudflare detected, waiting 10s...")
                 await asyncio.sleep(10)
+                
+                # נסה לחכות לאלמנט ספציפי
+                try:
+                    await page.wait_for_selector('body', state='visible', timeout=5000)
+                except:
+                    pass
+                
                 content = await page.content()
                 content_lower = content.lower()
             
-            # ניתוח
+            # ניתוח התוכן
             current_url = page.url
             
+            # חילוץ VIN אם קיים
+            vin = None
+            if 'q=' in url:
+                try:
+                    vin = url.split('q=')[1].split('&')[0]
+                except:
+                    pass
+            
+            # ניתוח מפורט
             analysis = {
                 'final_url': current_url,
                 'content_size': len(content),
                 'has_partsouq': 'partsouq' in content_lower,
+                'has_vin': vin.lower() in content_lower if vin else False,
                 'has_parts': 'part' in content_lower,
-                'has_products': 'product' in content_lower,
                 'has_catalog': 'catalog' in content_lower,
-                'has_search': any(word in current_url for word in ['/search/', '/catalog/']),
-                'has_cloudflare': 'cloudflare' in content_lower,
+                'has_search': '/search/' in current_url or '/catalog/' in current_url,
+                'has_cloudflare': any(cf in content_lower for cf in ['cloudflare', 'just a moment', 'checking your browser']),
+                'has_error': 'error' in content_lower or '404' in content,
                 'proxy_used': bool(proxy_url),
-                'url_type': 'catalog' if '/catalog/' in current_url else 'search' if '/search/' in current_url else 'other'
+                'http_status': response.status if response else None
             }
             
+            # קביעת הצלחה
             success = (
                 analysis['has_partsouq'] and
                 not analysis['has_cloudflare'] and
-                analysis['has_search']
+                not analysis['has_error'] and
+                (analysis['has_search'] or analysis['has_catalog'])
             )
             
-            # תוכן לדוגמה
-            sample = content[:300]
+            # דוגמת תוכן
+            sample = content[:500]
             sample_clean = ''.join(c if 32 <= ord(c) < 127 else ' ' for c in sample)
-            sample_clean = ' '.join(sample_clean.split())[:150]
-            
-            await page.close()
+            sample_clean = ' '.join(sample_clean.split())[:200]
             
             return {
                 'success': success,
-                'identifier': identifier,
-                'original_url': url,
+                'url': url,
+                'vin': vin,
                 'final_url': current_url,
                 'analysis': analysis,
                 'sample_content': sample_clean,
-                'method': 'playwright_custom_url'
+                'timestamp': time.time()
             }
             
-        except Exception as e:
-            logger.error(f"Custom URL scraping error: {str(e)}")
+        except PlaywrightError as e:
+            logger.error(f"Playwright error: {e}")
             return {
                 'success': False,
-                'error': f"Scraping failed: {str(e)}",
-                'identifier': identifier,
+                'error': f'Playwright error: {str(e)}',
+                'url': url
+            }
+        except Exception as e:
+            logger.error(f"Scraping error: {e}")
+            return {
+                'success': False,
+                'error': str(e),
                 'url': url
             }
         finally:
-            await self.cleanup()
-    
-    async def scrape_partsouq(self, vin: str):
-        """סקרייפינג מתוקן"""
-        
-        # נסה עם proxy
-        proxy_url = random.choice(SMARTPROXY_ENDPOINTS)
-        
-        if not await self.init_browser(proxy_url):
-            logger.warning("Trying without proxy...")
-            if not await self.init_browser():
-                return {"success": False, "error": "Browser init completely failed"}
-        
-        try:
-            page = await self.context.new_page()
-            
-            target_url = f"https://partsouq.com/en/search/all?q={vin}"
-            logger.info(f"Navigating to: {target_url}")
-            
-            # כניסה עם timeout קצר יותר (25s במקום 45s)
-            await page.goto(target_url, wait_until='domcontentloaded', timeout=25000)
-            
-            # המתנה קצרה יותר
-            await asyncio.sleep(6)
-            
-            # בדיקת Cloudflare
-            content = await page.content()
-            content_lower = content.lower()
-            
-            if 'just a moment' in content_lower:
-                logger.info("Cloudflare - waiting 10s more...")
-                await asyncio.sleep(10)
-                content = await page.content()
-                content_lower = content.lower()
-            
-            # ניתוח
-            current_url = page.url
-            
-            analysis = {
-                'final_url': current_url,
-                'content_size': len(content),
-                'has_partsouq': 'partsouq' in content_lower,
-                'has_vin': vin.lower() in content_lower,
-                'has_parts': 'part' in content_lower,
-                'has_search': '/search/' in current_url,
-                'has_cloudflare': 'cloudflare' in content_lower,
-                'proxy_used': bool(proxy_url)
-            }
-            
-            success = (
-                analysis['has_partsouq'] and
-                not analysis['has_cloudflare'] and
-                analysis['has_search']
-            )
-            
-            # תוכן לדוגמה
-            sample = content[:300]
-            sample_clean = ''.join(c if 32 <= ord(c) < 127 else ' ' for c in sample)
-            sample_clean = ' '.join(sample_clean.split())[:150]
-            
-            await page.close()
-            
-            return {
-                'success': success,
-                'vin': vin,
-                'url': target_url,
-                'analysis': analysis,
-                'sample_content': sample_clean,
-                'method': 'playwright_stealth_fixed'
-            }
-            
-        except Exception as e:
-            logger.error(f"Scraping error: {str(e)}")
-            return {
-                'success': False,
-                'error': f"Scraping failed: {str(e)}",
-                'vin': vin
-            }
-        finally:
-            await self.cleanup()
-    
-    async def cleanup(self):
-        """ניקוי"""
-        try:
-            if self.context:
-                await self.context.close()
-            if self.browser:
-                await self.browser.close()
-            if self.playwright:
-                await self.playwright.stop()
-        except:
-            pass
-        
-        self.context = None
-        self.browser = None 
-        self.playwright = None
+            # ניקוי משאבים
+            try:
+                if context:
+                    await context.close()
+                if browser:
+                    await browser.close()
+                if playwright:
+                    await playwright.stop()
+            except:
+                pass
+
+# API Endpoints
 
 @app.get("/")
-def root():
+async def root():
+    """בדיקת סטטוס בסיסית"""
     return {
-        "message": "🎭 Partsouq Playwright FIXED",
+        "service": "Partsouq Scraper Production",
         "status": "online",
-        "version": "6.1.0",
-        "mode": "playwright_stealth_fixed",
-        "proxy": "smartproxy.net:3120"
+        "version": "7.0.0",
+        "features": {
+            "proxy": "smartproxy_residential",
+            "browser": "playwright_chromium",
+            "stealth": "advanced",
+            "concurrency_limit": CONCURRENCY_LIMIT
+        },
+        "endpoints": [
+            "/health",
+            "/scrape/{vin}",
+            "/scrape-url",
+            "/test-browser"
+        ]
     }
 
 @app.get("/health")
-def health():
-    return {
+async def health_check():
+    """בדיקת בריאות מתקדמת"""
+    checks = {
         "status": "healthy",
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "proxy_configured": bool(SMARTPROXY_USER and SMARTPROXY_PASS),
+        "concurrency_limit": CONCURRENCY_LIMIT,
+        "active_tasks": CONCURRENCY_LIMIT - semaphore._value
     }
+    
+    # בדיקת יכולת יצירת browser
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(headless=True)
+        await browser.close()
+        await playwright.stop()
+        checks["browser_test"] = "passed"
+    except Exception as e:
+        checks["browser_test"] = f"failed: {str(e)}"
+        checks["status"] = "degraded"
+    
+    return checks
 
 @app.get("/scrape/{vin}")
-async def scrape_vin(vin: str):
-    """סקרייפינג VIN עם Semaphore"""
+async def scrape_by_vin(vin: str):
+    """סקרייפינג לפי VIN"""
     
-    async with SEM:  # הגבלת 3 דפדפנים מקביל
-        logger.info(f"Scraping VIN: {vin}")
+    if not vin or len(vin) < 10:
+        raise HTTPException(status_code=400, detail="Invalid VIN format")
+    
+    async with semaphore:
+        logger.info(f"Processing VIN: {vin}")
         
-        scraper = PlaywrightStealth()
+        url = f"https://partsouq.com/en/search/all?q={vin}"
         
         try:
-            result = await scraper.scrape_partsouq(vin)
+            result = await StealthScraper.scrape_with_retry(url)
+            result['vin'] = vin
+            result['method'] = 'vin_search'
             return result
             
         except Exception as e:
-            logger.error(f"Main scrape error: {str(e)}")
+            logger.error(f"VIN scrape error: {e}")
             return {
                 "success": False,
                 "error": str(e),
@@ -311,68 +422,65 @@ async def scrape_vin(vin: str):
             }
 
 @app.post("/scrape-url")
-async def scrape_custom_url(request_data: dict):
-    """סקרייפינג URL מותאם אישית לN8N"""
+async def scrape_custom_url(request: ScrapeRequest):
+    """סקרייפינג URL מותאם אישית"""
     
-    url = request_data.get('url')
-    if not url:
-        return {"success": False, "error": "URL is required"}
+    if not request.url:
+        raise HTTPException(status_code=400, detail="URL is required")
     
-    # חילוץ VIN מה-URL לצורך לוגים
-    vin = "custom"
-    if 'q=' in url:
-        try:
-            vin = url.split('q=')[1].split('&')[0]
-        except:
-            pass
+    # וידוא שזה URL של partsouq
+    if 'partsouq.com' not in request.url.lower():
+        logger.warning(f"Non-partsouq URL requested: {request.url}")
     
-    async with SEM:
-        logger.info(f"Scraping custom URL: {url[:100]}...")
-        
-        scraper = PlaywrightStealth()
+    async with semaphore:
+        logger.info(f"Processing custom URL: {request.url[:100]}")
         
         try:
-            result = await scraper.scrape_custom_url(url, vin)
+            result = await StealthScraper.scrape_with_retry(request.url)
+            result['identifier'] = request.identifier
+            result['method'] = 'custom_url'
             return result
             
         except Exception as e:
-            logger.error(f"Custom URL scrape error: {str(e)}")
+            logger.error(f"Custom URL scrape error: {e}")
             return {
                 "success": False,
                 "error": str(e),
-                "url": url[:100]
+                "url": request.url[:100],
+                "identifier": request.identifier
             }
 
-@app.get("/test-proxy")
-async def test_proxy():
-    """בדיקת proxy פשוטה"""
-    
-    scraper = PlaywrightStealth()
-    proxy_url = SMARTPROXY_ENDPOINTS[0]  # הפרוקסי הראשון שלך
+@app.get("/test-browser")
+async def test_browser():
+    """בדיקת יכולת הרצת browser"""
     
     try:
-        if await scraper.init_browser(proxy_url):
-            page = await scraper.context.new_page()
-            await page.goto('http://httpbin.org/ip', timeout=15000)
-            
-            content = await page.content()
-            await scraper.cleanup()
-            
-            return {
-                "proxy_test": "success",
-                "proxy_config": "smartproxy.net:3120",
-                "response_size": len(content)
-            }
-        else:
-            return {
-                "proxy_test": "browser_init_failed"
-            }
-            
-    except Exception as e:
-        await scraper.cleanup()
+        # נסה ליצור browser
+        playwright, browser, context = await StealthScraper.create_browser()
+        
+        # נסה לטעון דף פשוט
+        page = await context.new_page()
+        await page.goto('http://httpbin.org/user-agent', timeout=10000)
+        content = await page.content()
+        
+        # ניקוי
+        await context.close()
+        await browser.close()
+        await playwright.stop()
+        
         return {
-            "proxy_test": "failed", 
-            "error": str(e)
+            "test": "success",
+            "browser": "chromium",
+            "content_length": len(content),
+            "message": "Browser works correctly"
+        }
+        
+    except Exception as e:
+        logger.error(f"Browser test failed: {e}")
+        return {
+            "test": "failed",
+            "error": str(e),
+            "message": "Check Docker configuration"
         }
 
 if __name__ == "__main__":
@@ -380,7 +488,17 @@ if __name__ == "__main__":
     
     port = int(os.environ.get("PORT", 10000))
     
-    logger.info("🎭 Starting FIXED Playwright Scraper")
-    logger.info("📍 Using smartproxy.net:3120")
+    logger.info("=" * 50)
+    logger.info("🚀 Partsouq Scraper Production v7.0.0")
+    logger.info(f"📍 Port: {port}")
+    logger.info(f"🔧 Concurrency: {CONCURRENCY_LIMIT}")
+    logger.info(f"🌐 Proxy: {'Configured' if SMARTPROXY_USER else 'Not configured'}")
+    logger.info("=" * 50)
     
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        workers=1,  # חשוב - רק worker אחד
+        log_level="info"
+    )
