@@ -20,7 +20,7 @@ app = FastAPI(
 )
 
 # הגדרות פרוקסי - תוקן!
-PROXY_URL = "http://smart-byparr:1209QWEasdzxcv@gate.smartproxy.com:10000"
+PROXY_URL = "http://smart-byparr:1209QWEasdzxcv@proxy.smartproxy.net:3120"
 ua = UserAgent()
 
 def get_proxy_dict():
