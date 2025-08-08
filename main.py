@@ -88,12 +88,17 @@ def scrape_with_scraperapi_sync(url: str, use_js: bool = False) -> Dict[str, Any
         
         # Check for success indicators
         has_parts = bool(re.search(r'part|vehicle|catalog', content_lower))
-        has_data = content_length > 1000
-        has_cloudflare = 'cloudflare' in content_lower or 'checking your browser' in content_lower
+        has_data = content_length > 50000  # שיניתי ל-50KB - אם יש יותר מזה, זה תוכן אמיתי!
+        
+        # Cloudflare challenge page = קטן. תוכן אמיתי = גדול
+        is_cloudflare_challenge = (
+            content_length < 20000 and  # דפי challenge קטנים
+            ('checking your browser' in content_lower or 'just a moment' in content_lower)
+        )
         
         # Extract part numbers
         parts_found = []
-        if has_parts and not has_cloudflare:
+        if has_parts and content_length > 50000:  # רק אם זה תוכן אמיתי
             # Common part patterns
             part_patterns = [
                 r'\b[0-9]{5}-[A-Z0-9]{5}\b',
@@ -110,7 +115,8 @@ def scrape_with_scraperapi_sync(url: str, use_js: bool = False) -> Dict[str, Any
             parts_found = list(set(parts_found))[:5]
         
         # Determine success
-        success = has_parts and has_data and not has_cloudflare
+        # תוכן גדול = הצלחה!
+        success = has_parts and has_data and not is_cloudflare_challenge
         
         # Get sample
         sample = content[:300] if content else ""
@@ -124,7 +130,8 @@ def scrape_with_scraperapi_sync(url: str, use_js: bool = False) -> Dict[str, Any
             'content_size': content_length,
             'analysis': {
                 'has_parts': has_parts,
-                'has_cloudflare': has_cloudflare,
+                'is_real_content': content_length > 50000,
+                'is_cloudflare_challenge': is_cloudflare_challenge,
                 'js_used': use_js
             },
             'parts_found': parts_found,
@@ -283,20 +290,61 @@ async def test_simple_scrape(vin: str):
     }
     
     try:
+        start_time = time.time()
+        
         # בלי שום פרמטרים נוספים
         r = requests.get('https://api.scraperapi.com/', params=payload)
         
+        load_time = time.time() - start_time
         content = r.text
         content_lower = content.lower()
         
+        # בדיקה מעמיקה יותר
+        cloudflare_indicators = [
+            'cloudflare' in content_lower,
+            'checking your browser' in content_lower,
+            'just a moment' in content_lower,
+            'cf-browser-verification' in content_lower
+        ]
+        
+        # חפש סימנים של תוכן אמיתי
+        real_content_indicators = [
+            '/catalog/' in content,
+            'data-part' in content,
+            'add-to-cart' in content_lower,
+            'price' in content_lower,
+            'vehicle' in content_lower
+        ]
+        
+        # חפש חלקים
+        import re
+        parts_found = re.findall(r'\b[0-9]{5,15}\b', content)[:10]
+        
+        # נסה למצוא את הVIN בתוצאות
+        vin_found = vin in content
+        
         return {
             'success': True,
+            'load_time': f"{load_time:.2f}s",
             'status_code': r.status_code,
             'content_size': len(content),
-            'has_partsouq': 'partsouq' in content_lower,
-            'has_cloudflare': 'cloudflare' in content_lower,
-            'has_parts': 'part' in content_lower,
-            'sample': content[:200]
+            'cloudflare_checks': {
+                'has_cloudflare_word': 'cloudflare' in content_lower,
+                'has_checking_browser': 'checking your browser' in content_lower,
+                'has_just_moment': 'just a moment' in content_lower,
+                'any_cloudflare': any(cloudflare_indicators)
+            },
+            'content_checks': {
+                'has_catalog': '/catalog/' in content,
+                'has_data_part': 'data-part' in content,
+                'has_add_cart': 'add-to-cart' in content_lower,
+                'has_price': 'price' in content_lower,
+                'vin_found': vin_found,
+                'real_content_score': sum(real_content_indicators)
+            },
+            'parts_found': parts_found[:5],
+            'sample': content[:500],
+            'verdict': 'REAL CONTENT' if sum(real_content_indicators) > 2 else 'CLOUDFLARE PAGE'
         }
     except Exception as e:
         return {'error': str(e)}
