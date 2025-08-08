@@ -1,6 +1,6 @@
 """
-Byparr API Server - הפתרון הסופי
-משתמש בByparr האמיתי + SeleniumBase UC Mode
+Professional Cloud Scraper - NO BYPARR
+SeleniumBase UC + undetected-chromedriver בלבד
 """
 
 from fastapi import FastAPI, HTTPException
@@ -18,9 +18,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Byparr Cloud API",
-    description="Byparr אמיתי בענן עם SeleniumBase UC",
-    version="5.0.0"
+    title="Professional Cloud Scraper",
+    description="SeleniumBase UC + undetected-chromedriver",
+    version="5.1.0"
 )
 
 # פרטי SmartProxy הנכונים (מהתמונה שלך)
@@ -57,7 +57,7 @@ def get_chrome_options():
     
     return chrome_options
 
-class CloudByparrScraper:
+class CloudProfessionalScraper:
     """סקרפר מקצועי עם Byparr בענן"""
     
     def __init__(self):
@@ -172,15 +172,15 @@ class CloudByparrScraper:
             self.driver = None
 
 # יצירת instance גלובלי
-cloud_scraper = CloudByparrScraper()
+cloud_scraper = CloudProfessionalScraper()
 
 @app.get("/")
 def root():
     return {
-        "message": "🚀 Cloud Byparr API - Professional Solution",
+        "message": "🚀 Professional Cloud Scraper - NO BYPARR",
         "status": "online",
-        "version": "5.0.0",
-        "mode": "undetected_chrome_cloud",
+        "version": "5.1.0",
+        "mode": "seleniumbase_uc_undetected_chrome",
         "proxy_configured": bool(SMARTPROXY_CONFIG)
     }
 
@@ -288,7 +288,7 @@ if __name__ == "__main__":
     
     port = int(os.environ.get("PORT", 10000))
     
-    logger.info("🚀 Starting Professional Cloud Byparr API")
+    logger.info("🚀 Starting Professional Cloud Scraper (NO BYPARR)")
     logger.info(f"📍 SmartProxy: {SMARTPROXY_CONFIG['server']}")
     
     uvicorn.run(
