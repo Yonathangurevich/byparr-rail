@@ -35,32 +35,27 @@ class ScrapeRequest(BaseModel):
     use_js: Optional[bool] = False
 
 def scrape_with_scraperapi_sync(url: str, use_js: bool = False) -> Dict[str, Any]:
-    """Synchronous ScraperAPI call using requests"""
+    """Synchronous ScraperAPI call - SIMPLIFIED"""
     
-    # Build payload exactly like your working example
+    # Minimal payload - בדיוק כמו מה שעובד!
     payload = {
         'api_key': SCRAPERAPI_KEY,
-        'url': url,
-        'country_code': 'us'
+        'url': url
     }
     
-    # Add JS rendering if needed
+    # רק אם באמת צריך JS
     if use_js:
         payload['render'] = 'true'
-        logger.info("⚠️ Using JS rendering")
-    else:
-        logger.info("⚡ Fast mode - no JS")
     
     try:
         logger.info(f"🔍 Scraping: {url[:80]}...")
         start_time = time.time()
         
-        # Make request using requests library - like your working example!
-        response = requests.get(
-            'https://api.scraperapi.com/',
-            params=payload,
-            timeout=45  # Generous timeout
-        )
+        # פשוט כמו שעובד לך - בלי פרמטרים מיותרים!
+        response = requests.get('https://api.scraperapi.com/', params=payload)
+        
+        load_time = time.time() - start_time
+        logger.info(f"Response in {load_time:.2f}s - Status: {response.status_code}")
         
         load_time = time.time() - start_time
         logger.info(f"Response in {load_time:.2f}s - Status: {response.status_code}")
@@ -181,7 +176,7 @@ async def health():
 
 @app.get("/scrape/{vin}")
 async def scrape_vin(vin: str, use_js: bool = False):
-    """Scrape by VIN"""
+    """Scrape by VIN - with smart URL strategy"""
     
     if not vin or len(vin) < 5:
         raise HTTPException(status_code=400, detail="Invalid VIN")
@@ -189,13 +184,47 @@ async def scrape_vin(vin: str, use_js: bool = False):
     if not SCRAPERAPI_KEY:
         raise HTTPException(status_code=500, detail="No API key")
     
+    # אסטרטגיה חדשה - נסה קודם URL ישיר של catalog
+    # אם יש לנו catalog URL מוכן, השתמש בו
+    # אחרת, נסה search עם JS
+    
     url = f"https://partsouq.com/en/search/all?q={vin}"
     
     logger.info(f"🚗 Scraping VIN: {vin}")
     
-    result = await scrape_with_scraperapi(url, use_js)
+    # נסה קודם בלי JS (מהיר)
+    result = await scrape_with_scraperapi(url, use_js=False)
+    
+    # אם נכשל בגלל Cloudflare, נסה עם JS
+    if not result['success'] and result.get('analysis', {}).get('has_cloudflare'):
+        logger.info("Cloudflare detected, retrying with JS...")
+        result = await scrape_with_scraperapi(url, use_js=True)
+    
     result['method'] = 'vin_search'
     result['vin'] = vin
+    
+    return result
+
+@app.get("/scrape-catalog")
+async def scrape_catalog(
+    c: str,
+    ssd: str,
+    vid: str,
+    gid: str,
+    q: Optional[str] = None
+):
+    """Direct catalog URL scraping - usually bypasses Cloudflare"""
+    
+    # בנה את ה-URL המלא
+    url = f"https://partsouq.com/en/catalog/genuine/parts?c={c}&ssd={ssd}&vid={vid}&gid={gid}"
+    if q:
+        url += f"&q={q}"
+    
+    logger.info(f"📚 Scraping catalog URL")
+    
+    # Catalog URLs בדרך כלל לא צריכים JS!
+    result = await scrape_with_scraperapi(url, use_js=False)
+    result['method'] = 'catalog_direct'
     
     return result
 
@@ -243,16 +272,82 @@ async def test_api():
     except Exception as e:
         return {"status": "❌ Error", "error": str(e)}
 
-@app.get("/test-partsouq")
-async def test_partsouq_direct():
-    """Test Partsouq with simple VIN"""
+@app.get("/test-simple/{vin}")
+async def test_simple_scrape(vin: str):
+    """Test with minimal code - exactly like your working example"""
     
-    test_url = "https://partsouq.com/en/search/all?q=TEST123"
-    result = await scrape_with_scraperapi(test_url, use_js=False)
+    # בדיוק כמו הקוד שעובד לך!
+    payload = {
+        'api_key': SCRAPERAPI_KEY,
+        'url': f'https://partsouq.com/en/search/all?q={vin}'
+    }
+    
+    try:
+        # בלי שום פרמטרים נוספים
+        r = requests.get('https://api.scraperapi.com/', params=payload)
+        
+        content = r.text
+        content_lower = content.lower()
+        
+        return {
+            'success': True,
+            'status_code': r.status_code,
+            'content_size': len(content),
+            'has_partsouq': 'partsouq' in content_lower,
+            'has_cloudflare': 'cloudflare' in content_lower,
+            'has_parts': 'part' in content_lower,
+            'sample': content[:200]
+        }
+    except Exception as e:
+        return {'error': str(e)}
+
+@app.get("/debug-scrape/{vin}")
+async def debug_scrape(vin: str):
+    """Debug - compare different approaches"""
+    
+    results = {}
+    
+    # Test 1: Minimal (like your working code)
+    try:
+        payload = {
+            'api_key': SCRAPERAPI_KEY,
+            'url': f'https://partsouq.com/en/search/all?q={vin}'
+        }
+        r1 = requests.get('https://api.scraperapi.com/', params=payload)
+        results['minimal'] = {
+            'status': r1.status_code,
+            'size': len(r1.text),
+            'cloudflare': 'cloudflare' in r1.text.lower()
+        }
+    except Exception as e:
+        results['minimal'] = {'error': str(e)}
+    
+    # Test 2: With timeout
+    try:
+        r2 = requests.get('https://api.scraperapi.com/', params=payload, timeout=30)
+        results['with_timeout'] = {
+            'status': r2.status_code,
+            'size': len(r2.text),
+            'cloudflare': 'cloudflare' in r2.text.lower()
+        }
+    except Exception as e:
+        results['with_timeout'] = {'error': str(e)}
+    
+    # Test 3: With country_code only
+    try:
+        payload['country_code'] = 'us'
+        r3 = requests.get('https://api.scraperapi.com/', params=payload)
+        results['with_country'] = {
+            'status': r3.status_code,
+            'size': len(r3.text),
+            'cloudflare': 'cloudflare' in r3.text.lower()
+        }
+    except Exception as e:
+        results['with_country'] = {'error': str(e)}
     
     return {
-        "test": "partsouq_direct",
-        "result": result
+        'vin': vin,
+        'tests': results
     }
 
 @app.get("/quota")
