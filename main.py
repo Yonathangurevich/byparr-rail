@@ -40,38 +40,26 @@ USER_AGENTS = [
 ]
 
 def get_working_proxy():
-    """החזר את הפרוקסי שעובד - עם Sticky Session"""
-    if not SMARTPROXY_USER or not SMARTPROXY_PASS:
-        logger.warning("No proxy credentials in ENV")
-        return None
+    """החזר את הפרוקסי שעובד - ScraperAPI כברירת מחדל"""
     
-    # יצירת session ID אקראי
-    import string
-    session_id = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+    # תמיד תעדיף ScraperAPI אם יש
+    SCRAPERAPI_KEY = os.getenv('SCRAPERAPI_KEY', '')
+    if SCRAPERAPI_KEY:
+        logger.info("✅ Using ScraperAPI - Cloudflare bypass enabled")
+        # ScraperAPI עם JavaScript rendering
+        # render=true - מפעיל headless browser
+        # country_code=us - משתמש ב-IPs אמריקאיים
+        return f"http://scraperapi.render=true.country_code=us:{SCRAPERAPI_KEY}@proxy-server.scraperapi.com:8001"
     
-    # רשימת endpoints עם sticky session
-    endpoints = [
-        # נסה קודם פורט 10000 (עובד ב-Render)
-        f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:10000",
-        
-        # אז פורט 3128 (proxy סטנדרטי)
-        f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3128",
-        
-        # פורט 8080
-        f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:8080",
-        
-        # הפורט שלך - 3120
-        f"http://{SMARTPROXY_USER}_area-IL_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3120",
-        
-        # נסיון עם gate endpoint
-        f"http://{SMARTPROXY_USER}_session-{session_id}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000",
-    ]
+    # Fallback ל-SmartProxy (אם אין ScraperAPI)
+    if SMARTPROXY_USER and SMARTPROXY_PASS:
+        logger.info("Using SmartProxy fallback")
+        import string
+        session_id = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+        return f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3120"
     
-    # לוג
-    logger.info(f"Using session ID: {session_id}")
-    
-    # החזר את הראשון (פורט 10000)
-    return endpoints[0]
+    logger.warning("⚠️ No proxy configured - scraping might fail")
+    return None
 
 # Semaphore להגבלת מקביליות
 CONCURRENCY_LIMIT = int(os.getenv('CONCURRENCY_LIMIT', '2'))
@@ -809,126 +797,79 @@ async def test_direct_connection():
             "error": str(e)
         }
 
-@app.get("/test-session-proxy")
-async def test_session_proxy():
-    """בדיקת proxy עם session parameters"""
+@app.get("/test-scraperapi")
+async def test_scraperapi():
+    """בדיקת ScraperAPI - האם עובד על Partsouq"""
     
-    import string
-    
-    if not SMARTPROXY_USER or not SMARTPROXY_PASS:
-        return {"error": "No credentials"}
-    
-    # יצירת session ID
-    session_id = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
-    
-    # נסה כמה קונפיגורציות
-    configs = [
-        {
-            "name": "Port_10000_US",
-            "url": f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:10000"
-        },
-        {
-            "name": "Port_8080_US", 
-            "url": f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:8080"
-        },
-        {
-            "name": "Port_3128_US",
-            "url": f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3128"
-        },
-        {
-            "name": "Port_3120_IL",
-            "url": f"http://{SMARTPROXY_USER}_area-IL_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3120"
-        },
-        {
-            "name": "Gate_10000",
-            "url": f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000"
+    SCRAPERAPI_KEY = os.getenv('SCRAPERAPI_KEY', '')
+    if not SCRAPERAPI_KEY:
+        return {
+            "error": "No ScraperAPI key configured",
+            "solution": "Set SCRAPERAPI_KEY in environment variables"
         }
-    ]
     
-    results = []
+    proxy_url = f"http://scraperapi.render=true.country_code=us:{SCRAPERAPI_KEY}@proxy-server.scraperapi.com:8001"
     
-    for config in configs:
-        try:
-            playwright = await async_playwright().start()
-            browser = await playwright.chromium.launch(
-                headless=True,
-                proxy={'server': config['url']},
-                args=[
-                    '--ignore-certificate-errors',
-                    '--ignore-ssl-errors',
-                    '--no-sandbox'
-                ]
-            )
-            
-            context = await browser.new_context(
-                ignore_https_errors=True
-            )
-            page = await context.new_page()
-            
-            # בדיקה בסיסית
-            await page.goto('http://httpbin.org/ip', timeout=8000)
-            content = await page.content()
-            
-            # חילוץ IP
-            import json
-            ip = "unknown"
-            try:
-                if '{' in content:
-                    json_str = content[content.find('{'):content.rfind('}')+1]
-                    data = json.loads(json_str)
-                    ip = data.get('origin', 'unknown')
-            except:
-                pass
-            
-            # בדיקת Partsouq
-            partsouq_ok = False
-            try:
-                await page.goto('https://partsouq.com', timeout=12000)
-                ps_content = await page.content()
-                partsouq_ok = 'partsouq' in ps_content.lower()
-            except:
-                pass
-            
-            await context.close()
-            await browser.close()
-            await playwright.stop()
-            
-            results.append({
-                "config": config['name'],
-                "status": "✅ WORKING",
-                "ip": ip,
-                "partsouq": "✅" if partsouq_ok else "❌"
-            })
-            
-            # אם מצאנו אחד שעובד עם Partsouq, תחזיר אותו
-            if partsouq_ok:
-                return {
-                    "success": True,
-                    "working_config": config,
-                    "session_id": session_id,
-                    "message": "Found working proxy configuration!"
-                }
-            
-        except Exception as e:
-            error = str(e)
-            if "PROXY_CONNECTION_FAILED" in error:
-                status = "❌ Port blocked"
-            elif "TUNNEL_CONNECTION_FAILED" in error:
-                status = "❌ SSL tunnel failed"
-            elif "ERR_PROXY_AUTH_FAILED" in error:
-                status = "❌ Auth failed"
-            elif "timeout" in error.lower():
-                status = "❌ Timeout"
-            else:
-                status = f"❌ {error[:30]}"
-            
-            results.append({
-                "config": config['name'],
-                "status": status
-            })
-    
-    return {
-        "session_id": session_id,
-        "test_results": results,
-        "recommendation": "None of the proxies worked with Partsouq"
-    }
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(
+            headless=True,
+            proxy={'server': proxy_url}
+        )
+        
+        context = await browser.new_context()
+        page = await context.new_page()
+        
+        # בדיקת VIN אמיתי
+        test_url = "https://partsouq.com/en/search/all?q=1HGCV1F17JA123456"
+        
+        logger.info(f"Testing ScraperAPI with: {test_url}")
+        
+        # ניווט
+        start_time = time.time()
+        await page.goto(test_url, wait_until='domcontentloaded', timeout=30000)
+        load_time = time.time() - start_time
+        
+        # קבל תוכן
+        content = await page.content()
+        current_url = page.url
+        
+        # ניתוח
+        content_lower = content.lower()
+        analysis = {
+            'success': True,
+            'load_time': f"{load_time:.2f} seconds",
+            'final_url': current_url,
+            'content_size': len(content),
+            'has_partsouq': 'partsouq' in content_lower,
+            'has_catalog': 'catalog' in current_url,
+            'has_cloudflare': 'cloudflare' in content_lower,
+            'has_parts': 'part' in content_lower,
+            'scraperapi_status': '✅ WORKING PERFECTLY!'
+        }
+        
+        # חפש חלקים
+        parts_found = []
+        if 'data-part' in content or 'part-number' in content:
+            import re
+            parts = re.findall(r'[A-Z0-9]{5,20}', content)
+            parts_found = list(set(parts[:5]))
+        
+        # ניקוי
+        await context.close()
+        await browser.close()
+        await playwright.stop()
+        
+        return {
+            'test': 'ScraperAPI Success',
+            'analysis': analysis,
+            'parts_found': parts_found,
+            'sample': content[:200]
+        }
+        
+    except Exception as e:
+        return {
+            'test': 'ScraperAPI Failed',
+            'error': str(e),
+            'solution': 'Check API key and quota'
+        }
