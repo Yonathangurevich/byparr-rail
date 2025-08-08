@@ -1,4 +1,4 @@
-# Dockerfile - Byparr מקצועי בענן
+# Dockerfile - Chrome מקצועי בלי Byparr
 FROM python:3.11-bullseye
 
 # הגדרת משתנים
@@ -9,7 +9,7 @@ ENV DISPLAY=:99
 # התקנת תלויות מערכת
 RUN apt-get update && apt-get install -y \
     wget gnupg ca-certificates \
-    xvfb x11vnc fluxbox \
+    xvfb \
     fonts-liberation fonts-dejavu-core fonts-freefont-ttf \
     --no-install-recommends
 
@@ -25,18 +25,11 @@ RUN useradd -m -s /bin/bash scraper
 USER scraper
 WORKDIR /home/scraper
 
-# התקנת Byparr מהמקור
-RUN pip install --user git+https://github.com/ThePhaseless/Byparr.git
+# התקנת חבילות Python
+COPY --chown=scraper:scraper requirements.txt .
+RUN pip install --user --no-cache-dir -r requirements.txt
 
-# התקנת תלויות נוספות
-RUN pip install --user \
-    fastapi \
-    uvicorn \
-    requests \
-    seleniumbase \
-    undetected-chromedriver
-
-# העתקת הקוד שלנו
+# העתקת הקוד
 COPY --chown=scraper:scraper . .
 
 # הוספת Python packages לPATH
