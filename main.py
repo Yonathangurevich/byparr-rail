@@ -21,16 +21,16 @@ app = FastAPI(
     version="6.1.0"
 )
 
-# SmartProxy configs - FIXED לפי הפידבק
+# SmartProxy configs - FIXED עם Gate Residential
 SMARTPROXY_ENDPOINTS = [
-    # הפרטים הנכונים שלך
-    f"http://{os.getenv('SMARTP_USER', 'smart-byparr')}:{os.getenv('SMARTP_PASS', '1209QWEasdzxcv')}@proxy.smartproxy.net:3120",
+    # Residential עבור Partsouq (הכי טוב)
+    f"http://{os.getenv('SMARTP_USER', 'smart-byparr')}:{os.getenv('SMARTP_PASS', '1209QWEasdzxcv')}@gate.smartproxy.io:7000",
     
-    # עם session עבור sticky
-    f"http://{os.getenv('SMARTP_USER', 'smart-byparr')}-session-{random.randint(1000,9999)}:{os.getenv('SMARTP_PASS', '1209QWEasdzxcv')}@proxy.smartproxy.net:3120",
+    # עם session Sticky
+    f"http://{os.getenv('SMARTP_USER', 'smart-byparr')}-session-{random.randint(1000,9999)}:{os.getenv('SMARTP_PASS', '1209QWEasdzxcv')}@gate.smartproxy.io:7000",
     
-    # אלטרנטיבה אם הראשון לא עובד
-    f"http://{os.getenv('SMARTP_USER', 'smart-byparr')}:{os.getenv('SMARTP_PASS', '1209QWEasdzxcv')}@gate.smartproxy.io:7000"
+    # הפרטים הישנים שלך כgallback
+    f"http://{os.getenv('SMARTP_USER', 'smart-byparr')}:{os.getenv('SMARTP_PASS', '1209QWEasdzxcv')}@proxy.smartproxy.net:3120"
 ]
 
 # Semaphore לביצועים
@@ -94,6 +94,88 @@ class PlaywrightStealth:
             logger.error(f"Browser init failed: {str(e)}")
             await self.cleanup()
             return False
+    
+    async def scrape_custom_url(self, url: str, identifier: str = "custom"):
+        """סקרייפינג URL מותאם אישית - לN8N"""
+        
+        # נסה עם proxy
+        proxy_url = random.choice(SMARTPROXY_ENDPOINTS)
+        
+        if not await self.init_browser(proxy_url):
+            logger.warning("Trying without proxy...")
+            if not await self.init_browser():
+                return {"success": False, "error": "Browser init completely failed"}
+        
+        try:
+            page = await self.context.new_page()
+            
+            logger.info(f"Navigating to custom URL: {url[:100]}...")
+            
+            # כניסה עם timeout
+            await page.goto(url, wait_until='domcontentloaded', timeout=25000)
+            
+            # המתנה
+            await asyncio.sleep(6)
+            
+            # בדיקת Cloudflare
+            content = await page.content()
+            content_lower = content.lower()
+            
+            if 'just a moment' in content_lower:
+                logger.info("Cloudflare - waiting 10s more...")
+                await asyncio.sleep(10)
+                content = await page.content()
+                content_lower = content.lower()
+            
+            # ניתוח
+            current_url = page.url
+            
+            analysis = {
+                'final_url': current_url,
+                'content_size': len(content),
+                'has_partsouq': 'partsouq' in content_lower,
+                'has_parts': 'part' in content_lower,
+                'has_products': 'product' in content_lower,
+                'has_catalog': 'catalog' in content_lower,
+                'has_search': any(word in current_url for word in ['/search/', '/catalog/']),
+                'has_cloudflare': 'cloudflare' in content_lower,
+                'proxy_used': bool(proxy_url),
+                'url_type': 'catalog' if '/catalog/' in current_url else 'search' if '/search/' in current_url else 'other'
+            }
+            
+            success = (
+                analysis['has_partsouq'] and
+                not analysis['has_cloudflare'] and
+                analysis['has_search']
+            )
+            
+            # תוכן לדוגמה
+            sample = content[:300]
+            sample_clean = ''.join(c if 32 <= ord(c) < 127 else ' ' for c in sample)
+            sample_clean = ' '.join(sample_clean.split())[:150]
+            
+            await page.close()
+            
+            return {
+                'success': success,
+                'identifier': identifier,
+                'original_url': url,
+                'final_url': current_url,
+                'analysis': analysis,
+                'sample_content': sample_clean,
+                'method': 'playwright_custom_url'
+            }
+            
+        except Exception as e:
+            logger.error(f"Custom URL scraping error: {str(e)}")
+            return {
+                'success': False,
+                'error': f"Scraping failed: {str(e)}",
+                'identifier': identifier,
+                'url': url
+            }
+        finally:
+            await self.cleanup()
     
     async def scrape_partsouq(self, vin: str):
         """סקרייפינג מתוקן"""
@@ -209,7 +291,7 @@ def health():
 
 @app.get("/scrape/{vin}")
 async def scrape_vin(vin: str):
-    """סקרייפינג עם Semaphore"""
+    """סקרייפינג VIN עם Semaphore"""
     
     async with SEM:  # הגבלת 3 דפדפנים מקביל
         logger.info(f"Scraping VIN: {vin}")
@@ -226,6 +308,39 @@ async def scrape_vin(vin: str):
                 "success": False,
                 "error": str(e),
                 "vin": vin
+            }
+
+@app.post("/scrape-url")
+async def scrape_custom_url(request_data: dict):
+    """סקרייפינג URL מותאם אישית לN8N"""
+    
+    url = request_data.get('url')
+    if not url:
+        return {"success": False, "error": "URL is required"}
+    
+    # חילוץ VIN מה-URL לצורך לוגים
+    vin = "custom"
+    if 'q=' in url:
+        try:
+            vin = url.split('q=')[1].split('&')[0]
+        except:
+            pass
+    
+    async with SEM:
+        logger.info(f"Scraping custom URL: {url[:100]}...")
+        
+        scraper = PlaywrightStealth()
+        
+        try:
+            result = await scraper.scrape_custom_url(url, vin)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Custom URL scrape error: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "url": url[:100]
             }
 
 @app.get("/test-proxy")
