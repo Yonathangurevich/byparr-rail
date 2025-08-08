@@ -1,6 +1,6 @@
 """
-Ultimate Partsouq Scraper
-מחקה את Byparr המקומי - כל הטריקים
+Ultimate Partsouq Scraper - FIXED
+תיקון הבעיות בקוד
 """
 
 from fastapi import FastAPI, HTTPException
@@ -10,7 +10,6 @@ import requests
 import logging
 import json
 import random
-import base64
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 
@@ -18,59 +17,42 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title="Ultimate Partsouq Scraper",
-    description="מחקה Byparr מקומי",
-    version="4.0.0"
+    title="Ultimate Partsouq Scraper - FIXED",
+    description="תיקון הבעיות",
+    version="4.1.0"
 )
 
-# SmartProxy residential (נסה endpoint אחר)
+# SmartProxy configs (רק אלה שעובדים)
 PROXY_CONFIGS = [
-    "http://smart-byparr:1209QWEasdzxcv@proxy.smartproxy.net:3120",      # הנוכחי
-    "http://smart-byparr:1209QWEasdzxcv@proxy.smartproxy.net:3121",      # residential
-    "http://smart-byparr:1209QWEasdzxcv@residential.smartproxy.net:3120", # residential direct
+    "http://smart-byparr:1209QWEasdzxcv@proxy.smartproxy.net:3120",
+    "http://smart-byparr:1209QWEasdzxcv@proxy.smartproxy.net:3121",
 ]
 
 class AdvancedScraper:
     def __init__(self):
         self.session = None
-        self.proxy_index = 0
         self.init_session()
     
     def init_session(self):
-        """יצירת session מתקדם כמו Byparr"""
+        """יצירת session מתקדם"""
         self.session = requests.Session()
         
-        # Retry strategy כמו דפדפן
+        # Retry strategy
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=2,
+            total=2,  # פחות retries
+            backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
         )
         
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=10,
-            pool_maxsize=20
-        )
-        
+        adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         
-        # הגדרות SSL כמו Chrome
-        self.session.verify = True
-        
     def get_real_headers(self):
-        """Headers שמחקים Chrome אמיתי"""
-        
-        windows_versions = ["10.0", "11.0"]
-        chrome_versions = ["121.0.0.0", "120.0.0.0", "119.0.0.0"]
-        
-        os_version = random.choice(windows_versions)
-        chrome_version = random.choice(chrome_versions)
-        
+        """Headers אמיתיים"""
         return {
-            'User-Agent': f'Mozilla/5.0 (Windows NT {os_version}; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
@@ -79,22 +61,21 @@ class AdvancedScraper:
             'Sec-Fetch-Mode': 'navigate', 
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
-            'Sec-CH-UA': f'"Not A(Brand";v="99", "Google Chrome";v="{chrome_version.split(".")[0]}", "Chromium";v="{chrome_version.split(".")[0]}"',
+            'Sec-CH-UA': '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
             'Sec-CH-UA-Mobile': '?0',
             'Sec-CH-UA-Platform': '"Windows"',
-            'Sec-CH-UA-Platform-Version': f'"{os_version}.0"',
             'Cache-Control': 'max-age=0',
             'DNT': '1',
         }
     
     def try_proxy(self, proxy_url):
-        """בדיקת proxy ספציפי"""
+        """בדיקת proxy"""
         try:
             test_response = self.session.get(
                 'http://httpbin.org/ip',
                 proxies={'http': proxy_url, 'https': proxy_url},
-                timeout=10,
-                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                timeout=15,
+                headers=self.get_real_headers()
             )
             
             if test_response.status_code == 200:
@@ -103,102 +84,91 @@ class AdvancedScraper:
             return None, False
             
         except Exception as e:
-            logger.warning(f"Proxy {proxy_url} failed: {str(e)}")
+            logger.warning(f"Proxy test failed: {str(e)}")
             return None, False
     
     def find_working_proxy(self):
-        """מציאת proxy שעובד"""
+        """מציאת proxy עובד"""
         for proxy_url in PROXY_CONFIGS:
             ip, works = self.try_proxy(proxy_url)
             if works:
-                logger.info(f"Found working proxy: {proxy_url} -> IP: {ip}")
+                logger.info(f"Using proxy: {proxy_url} -> {ip}")
                 return proxy_url, ip
         
-        logger.warning("No working proxy found, trying without proxy")
+        logger.warning("No proxy works, going direct")
         return None, "direct"
     
-    def simulate_real_browsing(self, target_url):
-        """סימולציה של גלישה אמיתית כמו Byparr"""
+    def scrape_with_fallback(self, target_url):
+        """סקרייפינג עם fallback"""
         
-        # מציאת proxy שעובד
+        # ניסיון 1: עם proxy
         working_proxy, ip = self.find_working_proxy()
-        proxy_dict = {'http': working_proxy, 'https': working_proxy} if working_proxy else None
         
-        logger.info(f"Using IP: {ip}")
+        for attempt in range(3):  # 3 ניסיונות
+            try:
+                logger.info(f"Attempt {attempt + 1}: {target_url}")
+                
+                proxy_dict = None
+                if working_proxy:
+                    proxy_dict = {'http': working_proxy, 'https': working_proxy}
+                    logger.info(f"Using proxy: {ip}")
+                else:
+                    logger.info("Using direct connection")
+                
+                # בקשה אחת פשוטה - בלי סימולציה מורכבת
+                headers = self.get_real_headers()
+                
+                response = self.session.get(
+                    target_url,
+                    proxies=proxy_dict,
+                    headers=headers,
+                    timeout=30,  # timeout ארוך יותר
+                    allow_redirects=True
+                )
+                
+                logger.info(f"Response: {response.status_code} | Size: {len(response.text)}")
+                
+                return response, working_proxy, ip
+                
+            except requests.exceptions.Timeout:
+                logger.warning(f"Timeout on attempt {attempt + 1}")
+                if attempt < 2:  # אם זה לא הניסיון האחרון
+                    time.sleep(2)
+                    continue
+                    
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+                if attempt < 2:
+                    # נסה עם proxy אחר או בלי proxy
+                    if working_proxy and attempt == 0:
+                        logger.info("Trying without proxy...")
+                        working_proxy, ip = None, "direct"
+                    time.sleep(2)
+                    continue
         
-        try:
-            # שלב 1: כניסה לעמוד הבית
-            logger.info("Step 1: Home page visit")
-            
-            headers1 = self.get_real_headers()
-            
-            home_response = self.session.get(
-                'https://partsouq.com',
-                proxies=proxy_dict,
-                headers=headers1,
-                timeout=25,
-                allow_redirects=True
-            )
-            
-            logger.info(f"Home response: {home_response.status_code}")
-            
-            # שמירת cookies
-            home_cookies = dict(home_response.cookies)
-            logger.info(f"Got {len(home_cookies)} cookies")
-            
-            # המתנה אנושית
-            delay = random.uniform(3, 7)
-            logger.info(f"Human delay: {delay:.1f}s")
-            time.sleep(delay)
-            
-            # שלב 2: חיפוש עם הקשר מהעמוד הקודם
-            logger.info(f"Step 2: Searching {target_url}")
-            
-            headers2 = self.get_real_headers()
-            headers2.update({
-                'Referer': 'https://partsouq.com/',
-                'Sec-Fetch-Site': 'same-origin',
-                'Cache-Control': 'no-cache',
-            })
-            
-            # עדכון cookies
-            self.session.cookies.update(home_response.cookies)
-            
-            search_response = self.session.get(
-                target_url,
-                proxies=proxy_dict,
-                headers=headers2,
-                timeout=30,
-                allow_redirects=True
-            )
-            
-            return search_response, working_proxy, ip
-            
-        except Exception as e:
-            logger.error(f"Browsing simulation failed: {str(e)}")
-            return None, working_proxy, ip
+        logger.error("All attempts failed")
+        return None, working_proxy, ip
 
 scraper = AdvancedScraper()
 
 @app.get("/")
 def root():
     return {
-        "message": "🚀 Ultimate Partsouq Scraper",
+        "message": "🚀 Ultimate Partsouq Scraper - FIXED",
         "status": "online",
-        "version": "4.0.0",
-        "mode": "byparr_simulation",
-        "proxies_available": len(PROXY_CONFIGS)
+        "version": "4.1.0",
+        "mode": "simplified_robust"
     }
 
 @app.get("/test-proxy-rotation")
 def test_proxy_rotation():
-    """בדיקת כל ה-proxies"""
+    """בדיקת proxies"""
     results = {}
     
     for i, proxy_url in enumerate(PROXY_CONFIGS):
         ip, works = scraper.try_proxy(proxy_url)
         results[f"proxy_{i+1}"] = {
-            "url": proxy_url,
+            "url": proxy_url.replace("1209QWEasdzxcv", "***"),  # הסתרת סיסמה
             "working": works,
             "ip": ip
         }
@@ -210,23 +180,25 @@ def test_proxy_rotation():
 
 @app.get("/scrape-ultimate/{vin}")
 def scrape_ultimate(vin: str):
-    """סקרייפינג סופי - מחקה Byparr בדיוק"""
+    """סקרייפינג מתוקן"""
     
     try:
-        logger.info(f"Ultimate scraping VIN: {vin}")
+        logger.info(f"Scraping VIN: {vin}")
         
         target_url = f"https://partsouq.com/en/search/all?q={vin}"
         
-        # סימולציה מלאה
-        response, proxy_used, ip = scraper.simulate_real_browsing(target_url)
+        # סקרייפינג עם fallback
+        response, proxy_used, ip = scraper.scrape_with_fallback(target_url)
         
         if not response:
             return {
                 "success": False,
-                "error": "Failed to simulate browsing"
+                "error": "All scraping attempts failed",
+                "vin": vin,
+                "url": target_url
             }
         
-        # ניתוח מפורט
+        # ניתוח
         content = response.text
         content_lower = content.lower()
         
@@ -241,16 +213,22 @@ def scrape_ultimate(vin: str):
             'has_parts': 'part' in content_lower,
             'has_products': 'product' in content_lower,
             'has_results': 'result' in content_lower,
-            'is_cloudflare': 'cloudflare' in content_lower,
-            'is_blocked': response.status_code in [403, 429],
+            'is_cloudflare': 'cloudflare' in content_lower or 'just a moment' in content_lower,
+            'is_blocked': response.status_code in [403, 429, 451],
             'cookies_received': len(response.cookies),
             'final_url': response.url
         }
         
-        # דוגמת תוכן (נקיה)
-        sample = content[:400].encode('utf-8', errors='ignore').decode('utf-8')
-        sample_clean = ''.join(char if ord(char) < 128 else '?' for char in sample)
+        # sample נקי
+        try:
+            sample = content[:300]
+            # ניקוי תווים מוזרים
+            sample_clean = ''.join(c if ord(c) < 128 and ord(c) > 31 else ' ' for c in sample)
+            sample_clean = ' '.join(sample_clean.split())  # ניקוי רווחים
+        except:
+            sample_clean = "Content contains special characters"
         
+        # הערכת הצלחה
         success = (
             response.status_code == 200 and 
             analysis['has_partsouq'] and 
@@ -258,7 +236,7 @@ def scrape_ultimate(vin: str):
             not analysis['is_cloudflare']
         )
         
-        logger.info(f"Ultimate result: {success} | Status: {response.status_code}")
+        logger.info(f"Final result: SUCCESS={success} | Status={response.status_code} | Partsouq={analysis['has_partsouq']} | Blocked={analysis['is_blocked']}")
         
         return {
             "success": success,
@@ -266,27 +244,55 @@ def scrape_ultimate(vin: str):
             "url": target_url,
             "analysis": analysis,
             "sample_content": sample_clean,
-            "method": "ultimate_byparr_simulation"
+            "method": "fixed_ultimate_scraper",
+            "debug_info": {
+                "proxy_worked": bool(proxy_used),
+                "ip_address": ip,
+                "content_preview": sample_clean[:100]
+            }
         }
         
     except Exception as e:
-        logger.error(f"Ultimate scraping failed: {str(e)}")
+        logger.error(f"Scraping failed completely: {str(e)}")
         return {
             "success": False,
-            "error": str(e),
-            "vin": vin
+            "error": f"Exception: {str(e)}",
+            "vin": vin,
+            "url": target_url if 'target_url' in locals() else None
         }
 
 @app.get("/health")
 def health():
     return {"status": "healthy", "timestamp": time.time()}
 
+@app.get("/test-simple-request/{vin}")
+def test_simple_request(vin: str):
+    """בדיקה פשוטה מאוד"""
+    try:
+        url = f"https://partsouq.com/en/search/all?q={vin}"
+        
+        response = requests.get(
+            url, 
+            timeout=20,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        )
+        
+        return {
+            "simple_test": True,
+            "status_code": response.status_code,
+            "content_size": len(response.text),
+            "has_partsouq": 'partsouq' in response.text.lower(),
+            "url": url
+        }
+    except Exception as e:
+        return {
+            "simple_test": False,
+            "error": str(e)
+        }
+
 if __name__ == "__main__":
     import uvicorn
     
     port = int(os.environ.get("PORT", 10000))
-    
-    logger.info(f"🚀 Starting Ultimate Partsouq Scraper")
-    logger.info(f"📍 Available proxies: {len(PROXY_CONFIGS)}")
-    
+    logger.info("🚀 Starting FIXED Ultimate Partsouq Scraper")
     uvicorn.run("main:app", host="0.0.0.0", port=port)
