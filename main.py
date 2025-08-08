@@ -32,28 +32,36 @@ SMARTPROXY_PASS = os.getenv('SMARTP_PASS', '')
 
 # Residential Gateway endpoints - הנכונים!
 def get_proxy_endpoints():
-    """יצירת רשימת פרוקסי endpoints"""
+    """יצירת רשימת פרוקסי endpoints - תיקון לפורטים שעובדים ב-Render"""
     if not SMARTPROXY_USER or not SMARTPROXY_PASS:
         logger.warning("No proxy credentials found in ENV")
         return []
     
     endpoints = []
     
-    # Residential Gateway - העיקרי
+    # נסה קודם את הפורט 10000 שבטוח עובד ב-Render
     endpoints.append(
-        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:7000"
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000"
     )
     
-    # עם sticky session
-    for i in range(3):
-        session_id = random.randint(10000, 99999)
-        endpoints.append(
-            f"http://{SMARTPROXY_USER}-session-{session_id}:{SMARTPROXY_PASS}@gate.smartproxy.com:7000"
-        )
+    # נסה גם פורט 80 (HTTP סטנדרטי - תמיד פתוח)
+    endpoints.append(
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:80"
+    )
     
-    # Fallback - הישן שלך
+    # פורט 8080 (proxy סטנדרטי)
+    endpoints.append(
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@proxy.smartproxy.com:8080"
+    )
+    
+    # הפורט הישן שלך שעבד פעם
     endpoints.append(
         f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3120"
+    )
+    
+    # Datacenter proxies על פורטים נמוכים (אם יש לך גישה)
+    endpoints.append(
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@dc.smartproxy.com:10000"
     )
     
     return endpoints
@@ -450,6 +458,67 @@ async def scrape_custom_url(request: ScrapeRequest):
                 "identifier": request.identifier
             }
 
+@app.get("/test-proxy")
+async def test_proxy():
+    """בדיקת חיבור לפרוקסי - מפורטת"""
+    
+    results = []
+    proxy_endpoints = get_proxy_endpoints()
+    
+    if not proxy_endpoints:
+        return {
+            "error": "No proxy credentials configured",
+            "solution": "Set SMARTP_USER and SMARTP_PASS environment variables"
+        }
+    
+    # בדוק כל endpoint
+    for proxy_url in proxy_endpoints[:3]:  # בדוק רק 3 ראשונים
+        # הסתר סיסמה בלוג
+        safe_url = proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url
+        
+        try:
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(
+                headless=True,
+                proxy={'server': proxy_url}
+            )
+            context = await browser.new_context()
+            page = await context.new_page()
+            
+            # נסה לגשת לשירות בדיקת IP
+            await page.goto('http://httpbin.org/ip', timeout=10000)
+            content = await page.content()
+            
+            # ניקוי
+            await context.close()
+            await browser.close()
+            await playwright.stop()
+            
+            results.append({
+                "endpoint": safe_url,
+                "status": "✅ WORKING",
+                "response_size": len(content)
+            })
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "ERR_PROXY_CONNECTION_FAILED" in error_msg:
+                status = "❌ CONNECTION_FAILED (port blocked?)"
+            elif "ERR_PROXY_AUTH" in error_msg:
+                status = "❌ AUTH_FAILED (wrong credentials?)"
+            else:
+                status = f"❌ {error_msg[:50]}"
+                
+            results.append({
+                "endpoint": safe_url,
+                "status": status
+            })
+    
+    return {
+        "proxy_test_results": results,
+        "recommendation": "Use the first working endpoint"
+    }
+
 @app.get("/test-browser")
 async def test_browser():
     """בדיקת יכולת הרצת browser"""
@@ -483,22 +552,42 @@ async def test_browser():
             "message": "Check Docker configuration"
         }
 
-if __name__ == "__main__":
-    import uvicorn
+@app.get("/scrape-no-proxy/{vin}")
+async def scrape_without_proxy(vin: str):
+    """סקרייפינג בלי פרוקסי - לבדיקה"""
     
-    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"Scraping WITHOUT proxy: {vin}")
+    url = f"https://partsouq.com/en/search/all?q={vin}"
     
-    logger.info("=" * 50)
-    logger.info("🚀 Partsouq Scraper Production v7.0.0")
-    logger.info(f"📍 Port: {port}")
-    logger.info(f"🔧 Concurrency: {CONCURRENCY_LIMIT}")
-    logger.info(f"🌐 Proxy: {'Configured' if SMARTPROXY_USER else 'Not configured'}")
-    logger.info("=" * 50)
-    
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        workers=1,  # חשוב - רק worker אחד
-        log_level="info"
-    )
+    try:
+        # יצירת browser בלי פרוקסי
+        playwright, browser, context = await StealthScraper.create_browser(proxy_url=None)
+        
+        page = await context.new_page()
+        await page.goto(url, wait_until='domcontentloaded', timeout=25000)
+        await asyncio.sleep(5)
+        
+        content = await page.content()
+        current_url = page.url
+        
+        # ניקוי
+        await context.close()
+        await browser.close()
+        await playwright.stop()
+        
+        return {
+            "success": "partsouq" in content.lower(),
+            "vin": vin,
+            "final_url": current_url,
+            "content_size": len(content),
+            "has_cloudflare": "cloudflare" in content.lower(),
+            "method": "NO_PROXY"
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "vin": vin,
+            "method": "NO_PROXY"
+        }
