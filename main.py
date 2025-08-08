@@ -1,6 +1,5 @@
 """
-Partsouq Simple Scraper - בלי Selenium
-גישה פשוטה עם requests בלבד
+Partsouq Simple Scraper - תיקון פרוקסי
 """
 
 from fastapi import FastAPI, HTTPException
@@ -20,9 +19,34 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# הגדרות
-PROXY_CONFIG = "smart-byparr:1209QWEasdzxcv@gate.smartproxy.com:10000"
+# הגדרות פרוקסי - תוקן!
+PROXY_URL = "http://smart-byparr:1209QWEasdzxcv@gate.smartproxy.com:10000"
 ua = UserAgent()
+
+def get_proxy_dict():
+    """קבלת הגדרות פרוקסי נכונות"""
+    return {
+        'http': PROXY_URL,
+        'https': PROXY_URL
+    }
+
+def get_headers():
+    """קבלת headers מתקדמים"""
+    return {
+        'User-Agent': ua.chrome,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,he;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-CH-UA': '"Not A(Brand";v="99", "Chromium";v="121", "Google Chrome";v="121"',
+        'Sec-CH-UA-Mobile': '?0',
+        'Sec-CH-UA-Platform': '"Windows"'
+    }
 
 @app.get("/")
 def root():
@@ -32,7 +56,7 @@ def root():
         "status": "online",
         "version": "1.0.0",
         "mode": "requests_only",
-        "proxy_configured": bool(PROXY_CONFIG)
+        "proxy_configured": bool(PROXY_URL)
     }
 
 @app.get("/health")  
@@ -41,24 +65,22 @@ def health():
     return {
         "status": "healthy",
         "timestamp": time.time(),
-        "proxy": "configured" if PROXY_CONFIG else "not configured"
+        "proxy": "configured" if PROXY_URL else "not configured"
     }
 
 @app.get("/test-proxy")
 def test_proxy():
     """בדיקת חיבור הפרוקסי"""
     
-    proxy_dict = {
-        'http': f'http://{PROXY_CONFIG}',
-        'https': f'http://{PROXY_CONFIG}'
-    }
-    
     try:
         logger.info("Testing proxy connection...")
+        
+        # בדיקה עם httpbin
         response = requests.get(
             'http://httpbin.org/ip', 
-            proxies=proxy_dict, 
-            timeout=15
+            proxies=get_proxy_dict(), 
+            timeout=20,
+            headers={'User-Agent': ua.chrome}
         )
         
         if response.status_code == 200:
@@ -67,18 +89,51 @@ def test_proxy():
             return {
                 "proxy_status": "working",
                 "ip_address": result.get('origin'),
-                "response_time": response.elapsed.total_seconds()
+                "response_time": response.elapsed.total_seconds(),
+                "proxy_url": PROXY_URL
             }
         else:
             return {
                 "proxy_status": "failed",
-                "status_code": response.status_code
+                "status_code": response.status_code,
+                "proxy_url": PROXY_URL
             }
             
     except Exception as e:
         logger.error(f"Proxy test failed: {str(e)}")
         return {
             "proxy_status": "error",
+            "error": str(e),
+            "proxy_url": PROXY_URL
+        }
+
+@app.get("/test-no-proxy")
+def test_no_proxy():
+    """בדיקה בלי פרוקסי - לוודא שהשירות עובד"""
+    
+    try:
+        response = requests.get(
+            'http://httpbin.org/ip', 
+            timeout=15,
+            headers={'User-Agent': ua.chrome}
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return {
+                "no_proxy_status": "working",
+                "ip_address": result.get('origin'),
+                "response_time": response.elapsed.total_seconds()
+            }
+        else:
+            return {
+                "no_proxy_status": "failed",
+                "status_code": response.status_code
+            }
+            
+    except Exception as e:
+        return {
+            "no_proxy_status": "error",
             "error": str(e)
         }
 
@@ -86,82 +141,69 @@ def test_proxy():
 def scrape_simple(vin: str):
     """סקרייפינג פשוט עם requests"""
     
-    proxy_dict = {
-        'http': f'http://{PROXY_CONFIG}',
-        'https': f'http://{PROXY_CONFIG}'
-    }
-    
-    headers = {
-        'User-Agent': ua.chrome,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    }
-    
-    url = f"https://partsouq.com/en/search/all?q={vin}"
-    
     try:
         logger.info(f"Scraping VIN: {vin}")
         
-        # בקשה 1: עמוד הבית
-        logger.info("Step 1: Home page")
-        home_response = requests.get(
-            'https://partsouq.com',
-            proxies=proxy_dict,
-            headers=headers,
-            timeout=20,
-            allow_redirects=True
-        )
-        
-        if home_response.status_code != 200:
-            return {
-                "success": False,
-                "error": f"Home page failed: {home_response.status_code}"
-            }
-        
-        # המתנה
-        time.sleep(3)
-        
-        # עדכון headers עם referer
-        headers['Referer'] = 'https://partsouq.com/'
-        
-        # בקשה 2: חיפוש VIN
-        logger.info(f"Step 2: Search VIN - {url}")
-        search_response = requests.get(
-            url,
-            proxies=proxy_dict,
-            headers=headers,
-            timeout=20,
-            allow_redirects=True
-        )
+        # ניסיון ראשון עם פרוקסי
+        try:
+            url = f"https://partsouq.com/en/search/all?q={vin}"
+            
+            # בקשה עם פרוקסי
+            response = requests.get(
+                url,
+                proxies=get_proxy_dict(),
+                headers=get_headers(),
+                timeout=25,
+                allow_redirects=True
+            )
+            
+            proxy_used = True
+            
+        except Exception as proxy_error:
+            logger.warning(f"Proxy failed: {proxy_error}, trying without proxy...")
+            
+            # ניסיון בלי פרוקסי
+            response = requests.get(
+                url,
+                headers=get_headers(),
+                timeout=20,
+                allow_redirects=True
+            )
+            
+            proxy_used = False
         
         # ניתוח תוצאות
-        content = search_response.text
+        content = response.text
         content_lower = content.lower()
         
         analysis = {
-            'status_code': search_response.status_code,
+            'status_code': response.status_code,
             'content_size': len(content),
+            'proxy_used': proxy_used,
             'has_partsouq': 'partsouq' in content_lower,
             'has_vin': vin.lower() in content_lower,
             'has_parts': 'part' in content_lower,
             'has_products': 'product' in content_lower,
             'has_cloudflare': 'cloudflare' in content_lower or 'just a moment' in content_lower,
-            'response_time': search_response.elapsed.total_seconds()
+            'response_time': response.elapsed.total_seconds()
         }
         
         logger.info(f"Analysis: {analysis}")
         
+        # דוח הצלחה
+        success = (
+            response.status_code == 200 and 
+            'partsouq' in content_lower and
+            'cloudflare' not in content_lower
+        )
+        
         return {
-            "success": search_response.status_code == 200,
+            "success": success,
             "vin": vin,
             "url": url,
-            "final_url": search_response.url,
+            "final_url": response.url,
             "analysis": analysis,
-            "sample_content": content[:500] if len(content) > 500 else content
+            "sample_content": content[:300] if len(content) > 300 else content
         }
         
     except Exception as e:
@@ -170,33 +212,38 @@ def scrape_simple(vin: str):
             "success": False,
             "error": str(e),
             "vin": vin,
-            "url": url
+            "url": url if 'url' in locals() else None
         }
 
 @app.get("/test-partsouq-basic")
 def test_partsouq_basic():
     """בדיקה בסיסית של Partsouq"""
     
-    proxy_dict = {
-        'http': f'http://{PROXY_CONFIG}',
-        'https': f'http://{PROXY_CONFIG}'
-    }
-    
-    headers = {
-        'User-Agent': ua.chrome,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-    }
-    
     try:
         logger.info("Testing basic Partsouq access...")
-        response = requests.get(
-            'https://partsouq.com', 
-            proxies=proxy_dict,
-            headers=headers,
-            timeout=15,
-            allow_redirects=True
-        )
+        
+        # ניסיון עם פרוקסי
+        try:
+            response = requests.get(
+                'https://partsouq.com', 
+                proxies=get_proxy_dict(),
+                headers=get_headers(),
+                timeout=20,
+                allow_redirects=True
+            )
+            proxy_used = True
+            
+        except Exception as proxy_error:
+            logger.warning(f"Proxy failed, trying without: {proxy_error}")
+            
+            # ניסיון בלי פרוקסי
+            response = requests.get(
+                'https://partsouq.com', 
+                headers=get_headers(),
+                timeout=15,
+                allow_redirects=True
+            )
+            proxy_used = False
         
         content_lower = response.text.lower()
         
@@ -204,6 +251,7 @@ def test_partsouq_basic():
             "test_status": "completed",
             "status_code": response.status_code,
             "content_size": len(response.text),
+            "proxy_used": proxy_used,
             "has_partsouq_content": 'partsouq' in content_lower,
             "has_cloudflare": 'cloudflare' in content_lower,
             "response_time": response.elapsed.total_seconds(),
@@ -223,7 +271,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     
     logger.info(f"🚀 Starting Simple Partsouq Scraper on port {port}")
-    logger.info(f"📍 Proxy configured: {bool(PROXY_CONFIG)}")
+    logger.info(f"📍 Proxy URL: {PROXY_URL}")
     
     uvicorn.run(
         "main:app", 
