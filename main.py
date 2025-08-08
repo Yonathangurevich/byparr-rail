@@ -40,23 +40,38 @@ USER_AGENTS = [
 ]
 
 def get_working_proxy():
-    """החזר את הפרוקסי שעובד - עם תיקונים ל-SSL"""
+    """החזר את הפרוקסי שעובד - עם Sticky Session"""
     if not SMARTPROXY_USER or not SMARTPROXY_PASS:
         logger.warning("No proxy credentials in ENV")
         return None
     
-    # נסה כמה endpoints - כולל HTTP proxies
+    # יצירת session ID אקראי
+    import string
+    session_id = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+    
+    # רשימת endpoints עם sticky session
     endpoints = [
-        # HTTP proxy על פורט 10000
-        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000",
-        # נסה גם עם dc. subdomain
-        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@dc.smartproxy.com:10000",
-        # ופורט 80 סטנדרטי
-        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:80",
+        # נסה קודם פורט 10000 (עובד ב-Render)
+        f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:10000",
+        
+        # אז פורט 3128 (proxy סטנדרטי)
+        f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3128",
+        
+        # פורט 8080
+        f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:8080",
+        
+        # הפורט שלך - 3120
+        f"http://{SMARTPROXY_USER}_area-IL_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3120",
+        
+        # נסיון עם gate endpoint
+        f"http://{SMARTPROXY_USER}_session-{session_id}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000",
     ]
     
-    # החזר את הראשון או random
-    return random.choice(endpoints)
+    # לוג
+    logger.info(f"Using session ID: {session_id}")
+    
+    # החזר את הראשון (פורט 10000)
+    return endpoints[0]
 
 # Semaphore להגבלת מקביליות
 CONCURRENCY_LIMIT = int(os.getenv('CONCURRENCY_LIMIT', '2'))
@@ -794,63 +809,126 @@ async def test_direct_connection():
             "error": str(e)
         }
 
-@app.get("/test-smartproxy-auth")
-async def test_smartproxy_auth():
-    """בדיקת אימות מול SmartProxy"""
+@app.get("/test-session-proxy")
+async def test_session_proxy():
+    """בדיקת proxy עם session parameters"""
     
-    import httpx
+    import string
     
     if not SMARTPROXY_USER or not SMARTPROXY_PASS:
-        return {"error": "No credentials in ENV"}
+        return {"error": "No credentials"}
+    
+    # יצירת session ID
+    session_id = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+    
+    # נסה כמה קונפיגורציות
+    configs = [
+        {
+            "name": "Port_10000_US",
+            "url": f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:10000"
+        },
+        {
+            "name": "Port_8080_US", 
+            "url": f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:8080"
+        },
+        {
+            "name": "Port_3128_US",
+            "url": f"http://{SMARTPROXY_USER}_area-US_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3128"
+        },
+        {
+            "name": "Port_3120_IL",
+            "url": f"http://{SMARTPROXY_USER}_area-IL_life-15_session-{session_id}:{SMARTPROXY_PASS}@proxy.smartproxy.net:3120"
+        },
+        {
+            "name": "Gate_10000",
+            "url": f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000"
+        }
+    ]
     
     results = []
     
-    # נסה כמה endpoints
-    test_endpoints = [
-        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000",
-        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@dc.smartproxy.com:10000",
-        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:80"
-    ]
-    
-    for endpoint in test_endpoints:
-        safe_endpoint = endpoint.split('@')[-1]
-        
+    for config in configs:
         try:
-            # נסה עם httpx (לא playwright)
-            proxies = {"http://": endpoint, "https://": endpoint}
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(
+                headless=True,
+                proxy={'server': config['url']},
+                args=[
+                    '--ignore-certificate-errors',
+                    '--ignore-ssl-errors',
+                    '--no-sandbox'
+                ]
+            )
             
-            async with httpx.AsyncClient(proxies=proxies, timeout=10.0) as client:
-                response = await client.get("http://httpbin.org/ip")
-                
-                results.append({
-                    "endpoint": safe_endpoint,
-                    "status": "✅ AUTH OK",
-                    "ip": response.json().get('origin', 'unknown')
-                })
-                
-        except httpx.ProxyError as e:
+            context = await browser.new_context(
+                ignore_https_errors=True
+            )
+            page = await context.new_page()
+            
+            # בדיקה בסיסית
+            await page.goto('http://httpbin.org/ip', timeout=8000)
+            content = await page.content()
+            
+            # חילוץ IP
+            import json
+            ip = "unknown"
+            try:
+                if '{' in content:
+                    json_str = content[content.find('{'):content.rfind('}')+1]
+                    data = json.loads(json_str)
+                    ip = data.get('origin', 'unknown')
+            except:
+                pass
+            
+            # בדיקת Partsouq
+            partsouq_ok = False
+            try:
+                await page.goto('https://partsouq.com', timeout=12000)
+                ps_content = await page.content()
+                partsouq_ok = 'partsouq' in ps_content.lower()
+            except:
+                pass
+            
+            await context.close()
+            await browser.close()
+            await playwright.stop()
+            
             results.append({
-                "endpoint": safe_endpoint,
-                "status": "❌ PROXY ERROR",
-                "error": str(e)[:50]
+                "config": config['name'],
+                "status": "✅ WORKING",
+                "ip": ip,
+                "partsouq": "✅" if partsouq_ok else "❌"
             })
-        except httpx.AuthenticationError as e:
-            results.append({
-                "endpoint": safe_endpoint,
-                "status": "❌ AUTH FAILED",
-                "error": "Wrong username/password"
-            })
+            
+            # אם מצאנו אחד שעובד עם Partsouq, תחזיר אותו
+            if partsouq_ok:
+                return {
+                    "success": True,
+                    "working_config": config,
+                    "session_id": session_id,
+                    "message": "Found working proxy configuration!"
+                }
+            
         except Exception as e:
+            error = str(e)
+            if "PROXY_CONNECTION_FAILED" in error:
+                status = "❌ Port blocked"
+            elif "TUNNEL_CONNECTION_FAILED" in error:
+                status = "❌ SSL tunnel failed"
+            elif "ERR_PROXY_AUTH_FAILED" in error:
+                status = "❌ Auth failed"
+            elif "timeout" in error.lower():
+                status = "❌ Timeout"
+            else:
+                status = f"❌ {error[:30]}"
+            
             results.append({
-                "endpoint": safe_endpoint,
-                "status": "❌ FAILED",
-                "error": str(e)[:50]
+                "config": config['name'],
+                "status": status
             })
     
     return {
-        "smartproxy_auth_test": results,
-        "credentials_used": {
-            "user": SMARTPROXY_USER,
-            "pass_length": len(SMARTPROXY_PASS)
-        }
+        "session_id": session_id,
+        "test_results": results,
+        "recommendation": "None of the proxies worked with Partsouq"
     }
