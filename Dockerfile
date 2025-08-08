@@ -1,25 +1,20 @@
-# Dockerfile - Playwright Stealth (קל ומהיר)
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+# Dockerfile - מתוקן לפי הפידבק
+FROM mcr.microsoft.com/playwright/python:v1.44.0-focal
 
-# הגדרות בסיסיות
-ENV PYTHONUNBUFFERED=1
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+WORKDIR /app
 
-# יצירת משתמש
-RUN useradd -m -s /bin/bash scraper
-USER scraper
-WORKDIR /home/scraper
-
-# התקנת Python packages
-COPY --chown=scraper:scraper requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+# העתקה והתקנת requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # העתקת הקוד
-COPY --chown=scraper:scraper . .
+COPY . .
 
-# הוספת Python packages לPATH
-ENV PATH="/home/scraper/.local/bin:$PATH"
+# הגדרת Playwright browsers
+ENV PLAYWRIGHT_BROWSERS_PATH=0
+RUN playwright install --with-deps
 
 EXPOSE 10000
 
-CMD ["python", "main.py"]
+# הפעלה ישירה עם uvicorn
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
