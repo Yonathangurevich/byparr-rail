@@ -40,13 +40,23 @@ USER_AGENTS = [
 ]
 
 def get_working_proxy():
-    """החזר את הפרוקסי שעובד - port 10000"""
+    """החזר את הפרוקסי שעובד - עם תיקונים ל-SSL"""
     if not SMARTPROXY_USER or not SMARTPROXY_PASS:
         logger.warning("No proxy credentials in ENV")
         return None
     
-    # השתמש רק בפורט שאנחנו יודעים שעובד!
-    return f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000"
+    # נסה כמה endpoints - כולל HTTP proxies
+    endpoints = [
+        # HTTP proxy על פורט 10000
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000",
+        # נסה גם עם dc. subdomain
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@dc.smartproxy.com:10000",
+        # ופורט 80 סטנדרטי
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:80",
+    ]
+    
+    # החזר את הראשון או random
+    return random.choice(endpoints)
 
 # Semaphore להגבלת מקביליות
 CONCURRENCY_LIMIT = int(os.getenv('CONCURRENCY_LIMIT', '2'))
@@ -201,9 +211,9 @@ class UltimateScraper:
         try:
             playwright = await async_playwright().start()
             
-            # Browser arguments משופרים
+            # Browser arguments משופרים - כולל תיקוני SSL
             launch_options = {
-                'headless': True,  # או False לדיבאג
+                'headless': True,
                 'args': [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
@@ -220,16 +230,26 @@ class UltimateScraper:
                     '--start-maximized',
                     '--disable-features=TranslateUI',
                     '--disable-features=AutomationControlledPopup',
-                    '--lang=en-US'
-                ]
+                    '--lang=en-US',
+                    # תיקוני SSL חשובים!
+                    '--ignore-certificate-errors',
+                    '--ignore-certificate-errors-spki-list',
+                    '--ignore-ssl-errors',
+                    '--allow-insecure-localhost',
+                    '--unsafely-treat-insecure-origin-as-secure=https://partsouq.com'
+                ],
+                'ignore_default_args': ['--enable-automation']
             }
             
             # הוסף proxy רק אם נדרש
             if use_proxy:
                 proxy_url = get_working_proxy()
                 if proxy_url:
-                    logger.info("Using proxy on port 10000")
-                    launch_options['proxy'] = {'server': proxy_url}
+                    logger.info(f"Using proxy: {proxy_url.split('@')[-1]}")
+                    launch_options['proxy'] = {
+                        'server': proxy_url,
+                        'bypass': 'localhost,127.0.0.1,::1'  # עקוף localhost
+                    }
                 else:
                     logger.warning("No proxy configured, continuing without")
             
@@ -712,22 +732,125 @@ async def debug_scrape(vin: str):
         "debug_steps": steps
     }
 
-if __name__ == "__main__":
-    import uvicorn
+@app.get("/test-direct")
+async def test_direct_connection():
+    """בדיקה ישירה בלי פרוקסי - לוידוא שהבעיה בפרוקסי"""
     
-    port = int(os.environ.get("PORT", 10000))
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-setuid-sandbox']
+        )
+        context = await browser.new_context(
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        )
+        page = await context.new_page()
+        
+        # בדוק כמה אתרים
+        results = {}
+        
+        # 1. httpbin
+        try:
+            await page.goto('http://httpbin.org/ip', timeout=10000)
+            content = await page.content()
+            results['httpbin'] = {'success': True, 'size': len(content)}
+        except Exception as e:
+            results['httpbin'] = {'success': False, 'error': str(e)[:50]}
+        
+        # 2. Google
+        try:
+            await page.goto('https://www.google.com', timeout=10000)
+            title = await page.title()
+            results['google'] = {'success': True, 'title': title}
+        except Exception as e:
+            results['google'] = {'success': False, 'error': str(e)[:50]}
+        
+        # 3. Partsouq
+        try:
+            await page.goto('https://partsouq.com', timeout=20000)
+            await asyncio.sleep(5)
+            content = await page.content()
+            results['partsouq'] = {
+                'success': True,
+                'size': len(content),
+                'has_cloudflare': 'cloudflare' in content.lower()
+            }
+        except Exception as e:
+            results['partsouq'] = {'success': False, 'error': str(e)[:50]}
+        
+        await context.close()
+        await browser.close()
+        await playwright.stop()
+        
+        return {
+            "test": "direct_connection",
+            "results": results
+        }
+        
+    except Exception as e:
+        return {
+            "test": "failed",
+            "error": str(e)
+        }
+
+@app.get("/test-smartproxy-auth")
+async def test_smartproxy_auth():
+    """בדיקת אימות מול SmartProxy"""
     
-    logger.info("=" * 60)
-    logger.info("🚀 Partsouq Scraper Ultimate v8.0")
-    logger.info(f"📍 Port: {port}")
-    logger.info(f"🌐 Proxy: gate.smartproxy.com:10000")
-    logger.info(f"🔧 Concurrency: {CONCURRENCY_LIMIT}")
-    logger.info("=" * 60)
+    import httpx
     
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=port,
-        workers=1,
-        log_level="info"
-    )
+    if not SMARTPROXY_USER or not SMARTPROXY_PASS:
+        return {"error": "No credentials in ENV"}
+    
+    results = []
+    
+    # נסה כמה endpoints
+    test_endpoints = [
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:10000",
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@dc.smartproxy.com:10000",
+        f"http://{SMARTPROXY_USER}:{SMARTPROXY_PASS}@gate.smartproxy.com:80"
+    ]
+    
+    for endpoint in test_endpoints:
+        safe_endpoint = endpoint.split('@')[-1]
+        
+        try:
+            # נסה עם httpx (לא playwright)
+            proxies = {"http://": endpoint, "https://": endpoint}
+            
+            async with httpx.AsyncClient(proxies=proxies, timeout=10.0) as client:
+                response = await client.get("http://httpbin.org/ip")
+                
+                results.append({
+                    "endpoint": safe_endpoint,
+                    "status": "✅ AUTH OK",
+                    "ip": response.json().get('origin', 'unknown')
+                })
+                
+        except httpx.ProxyError as e:
+            results.append({
+                "endpoint": safe_endpoint,
+                "status": "❌ PROXY ERROR",
+                "error": str(e)[:50]
+            })
+        except httpx.AuthenticationError as e:
+            results.append({
+                "endpoint": safe_endpoint,
+                "status": "❌ AUTH FAILED",
+                "error": "Wrong username/password"
+            })
+        except Exception as e:
+            results.append({
+                "endpoint": safe_endpoint,
+                "status": "❌ FAILED",
+                "error": str(e)[:50]
+            })
+    
+    return {
+        "smartproxy_auth_test": results,
+        "credentials_used": {
+            "user": SMARTPROXY_USER,
+            "pass_length": len(SMARTPROXY_PASS)
+        }
+    }
