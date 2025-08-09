@@ -71,8 +71,8 @@ class ScrapeRequest(BaseModel):
     identifier: Optional[str] = "custom"
     use_js: Optional[bool] = False
 
-def scrape_with_scraperapi_sync(url: str, use_js: bool = False, retry_count: int = 0) -> Dict[str, Any]:
-    """Synchronous ScraperAPI call with enhanced error handling"""
+def scrape_with_scraperapi_sync(url: str, use_js: bool = False) -> Dict[str, Any]:
+    """Synchronous ScraperAPI call - FIXED VERSION"""
     
     payload = {
         'api_key': SCRAPERAPI_KEY,
@@ -82,118 +82,117 @@ def scrape_with_scraperapi_sync(url: str, use_js: bool = False, retry_count: int
     if use_js:
         payload['render'] = 'true'
     
-    try:
-        logger.info(f"🔍 Scraping (attempt {retry_count + 1}): {url[:80]}...")
-        start_time = time.time()
-        
-        # השתמש ב-session עם timeout ארוך
-        response = session.get(
-            'https://api.scraperapi.com/', 
-            params=payload,
-            timeout=120  # 120 שניות timeout
-        )
-        
-        load_time = time.time() - start_time
-        logger.info(f"Response in {load_time:.2f}s - Status: {response.status_code}")
-        
-        # טיפול ב-499 במפורש
-        if response.status_code == 499:
-            logger.warning(f"Got 499 - Client closed request. Retrying...")
-            if retry_count < 2:  # נסה עד 3 פעמים
-                time.sleep(5 * (retry_count + 1))  # המתן 5, 10, 15 שניות
-                return scrape_with_scraperapi_sync(url, use_js, retry_count + 1)
-            else:
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"🔍 Scraping (attempt {attempt + 1}/{max_retries}): {url[:80]}...")
+            start_time = time.time()
+            
+            # השתמש ב-session עם timeout ארוך
+            response = session.get(
+                'https://api.scraperapi.com/', 
+                params=payload,
+                timeout=90  # 90 שניות במקום 120
+            )
+            
+            load_time = time.time() - start_time
+            logger.info(f"Response in {load_time:.2f}s - Status: {response.status_code}")
+            
+            # טיפול ב-499
+            if response.status_code == 499:
+                logger.warning(f"Got 499 - attempt {attempt + 1}/{max_retries}")
+                if attempt < max_retries - 1:
+                    time.sleep(5 * (attempt + 1))
+                    continue
+                else:
+                    return {
+                        'success': False,
+                        'error': f'499 error after {max_retries} attempts',
+                        'status_code': 499,
+                        'url': url
+                    }
+            
+            if response.status_code != 200:
+                logger.error(f"ScraperAPI returned {response.status_code}")
                 return {
                     'success': False,
-                    'error': 'Persistent 499 error after 3 attempts',
-                    'status_code': 499,
-                    'url': url
+                    'error': f'API returned {response.status_code}',
+                    'details': response.text[:200],
+                    'url': url,
+                    'load_time': f"{load_time:.2f}s"
                 }
-        
-        if response.status_code != 200:
-            logger.error(f"ScraperAPI returned {response.status_code}")
+            
+            # Success!
+            content = response.text
+            content_length = len(content)
+            logger.info(f"✅ Got {content_length} bytes in {load_time:.2f}s")
+            
+            # Quick analysis
+            content_lower = content.lower()
+            
+            # Extract VIN
+            vin = None
+            if 'q=' in url:
+                try:
+                    vin = url.split('q=')[1].split('&')[0]
+                except:
+                    pass
+            
+            # Check success
+            has_parts = bool(re.search(r'part|vehicle|catalog', content_lower))
+            has_data = content_length > 50000
+            is_cloudflare = content_length < 20000 and 'cloudflare' in content_lower
+            
+            success = has_parts and has_data and not is_cloudflare
+            
+            return {
+                'success': success,
+                'url': url,
+                'vin': vin,
+                'load_time': f"{load_time:.2f}s",
+                'content_size': content_length,
+                'html_content': content,
+                'credits_used': 10 if use_js else 1,
+                'attempts': attempt + 1
+            }
+            
+        except requests.Timeout:
+            logger.error(f"Timeout on attempt {attempt + 1}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+                continue
             return {
                 'success': False,
-                'error': f'API returned {response.status_code}',
-                'details': response.text[:200],
-                'url': url,
-                'load_time': f"{load_time:.2f}s"
+                'error': 'Request timeout after all attempts',
+                'url': url
             }
-        
-        # Get content
-        content = response.text
-        content_length = len(content)
-        logger.info(f"✅ Got {content_length} bytes in {load_time:.2f}s")
-        
-        # Quick analysis
-        content_lower = content.lower()
-        
-        # Extract VIN if present
-        vin = None
-        if 'q=' in url:
-            try:
-                vin = url.split('q=')[1].split('&')[0]
-            except:
-                pass
-        
-        # Check for success indicators
-        has_parts = bool(re.search(r'part|vehicle|catalog', content_lower))
-        has_data = content_length > 50000
-        
-        # Cloudflare detection
-        is_cloudflare_challenge = (
-            content_length < 20000 and
-            ('checking your browser' in content_lower or 'just a moment' in content_lower)
-        )
-        
-        # Determine success
-        success = has_parts and has_data and not is_cloudflare_challenge
-        
-        return {
-            'success': success,
-            'url': url,
-            'vin': vin,
-            'load_time': f"{load_time:.2f}s",
-            'content_size': content_length,
-            'html_content': content,
-            'credits_used': 10 if use_js else 1,
-            'retry_count': retry_count
-        }
-        
-    except requests.Timeout:
-        logger.error(f"Request timeout after 120s (attempt {retry_count + 1})")
-        if retry_count < 2:
-            time.sleep(5)
-            return scrape_with_scraperapi_sync(url, use_js, retry_count + 1)
-        return {
-            'success': False,
-            'error': 'Request timeout after 120s and 3 attempts',
-            'url': url
-        }
-    except requests.ConnectionError as e:
-        logger.error(f"Connection error: {e}")
-        if retry_count < 2:
-            time.sleep(5)
-            return scrape_with_scraperapi_sync(url, use_js, retry_count + 1)
-        return {
-            'success': False,
-            'error': f'Connection error: {str(e)[:100]}',
-            'url': url
-        }
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        return {
-            'success': False,
-            'error': str(e)[:100],
-            'url': url
-        }
-
+        except Exception as e:
+            logger.error(f"Error on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+                continue
+            return {
+                'success': False,
+                'error': str(e)[:100],
+                'url': url
+            }
+    
+    # Should not reach here
+    return {
+        'success': False,
+        'error': 'Unknown error',
+        'url': url
+    }
 async def scrape_with_scraperapi(url: str, use_js: bool = False) -> Dict[str, Any]:
-    """Async wrapper with semaphore for rate limiting"""
-    async with semaphore:  # מגביל את מספר הבקשות המקביליות
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(executor, scrape_with_scraperapi_sync, url, use_js, 0)
-
+    """Simple async wrapper"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        executor, 
+        scrape_with_scraperapi_sync, 
+        url, 
+        use_js
+    )
 # === STARTUP EVENTS ===
 
 @app.on_event("startup")
