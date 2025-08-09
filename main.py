@@ -102,11 +102,11 @@ def scrape_with_scraperapi_sync(url: str, use_js: bool = False) -> Dict[str, Any
         
         return {
             'success': success,
-            'url': url,
+            'url': url,  # ה-URL שנסרק
             'vin': vin,
             'load_time': f"{load_time:.2f}s",
             'content_size': content_length,
-            'html_content': content if success else None,  # החזר את כל ה-HTML אם הצליח
+            'html_content': content,  # כל ה-HTML! זה מה שאתה צריך
             'credits_used': 10 if use_js else 1
         }
         
