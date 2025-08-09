@@ -96,31 +96,9 @@ def scrape_with_scraperapi_sync(url: str, use_js: bool = False) -> Dict[str, Any
             ('checking your browser' in content_lower or 'just a moment' in content_lower)
         )
         
-        # Extract part numbers
-        parts_found = []
-        if has_parts and content_length > 50000:  # רק אם זה תוכן אמיתי
-            # Common part patterns
-            part_patterns = [
-                r'\b[0-9]{5}-[A-Z0-9]{5}\b',
-                r'\b[A-Z]{2,3}[0-9]{8,10}\b',
-                r'\b[0-9]{10,15}\b'
-            ]
-            
-            for pattern in part_patterns:
-                matches = re.findall(pattern, content)
-                if matches:
-                    parts_found.extend(matches[:3])
-                    break
-            
-            parts_found = list(set(parts_found))[:5]
-        
         # Determine success
         # תוכן גדול = הצלחה!
         success = has_parts and has_data and not is_cloudflare_challenge
-        
-        # Get sample
-        sample = content[:300] if content else ""
-        sample = ''.join(c if 32 <= ord(c) < 127 else ' ' for c in sample)
         
         return {
             'success': success,
@@ -128,14 +106,7 @@ def scrape_with_scraperapi_sync(url: str, use_js: bool = False) -> Dict[str, Any
             'vin': vin,
             'load_time': f"{load_time:.2f}s",
             'content_size': content_length,
-            'analysis': {
-                'has_parts': has_parts,
-                'is_real_content': content_length > 50000,
-                'is_cloudflare_challenge': is_cloudflare_challenge,
-                'js_used': use_js
-            },
-            'parts_found': parts_found,
-            'sample': sample[:200],
+            'html_content': content if success else None,  # החזר את כל ה-HTML אם הצליח
             'credits_used': 10 if use_js else 1
         }
         
@@ -237,7 +208,7 @@ async def scrape_catalog(
 
 @app.post("/scrape-url")
 async def scrape_custom_url(request: ScrapeRequest):
-    """Scrape custom URL"""
+    """Scrape custom URL - מקבל כל URL ומחזיר את ה-HTML"""
     
     if not request.url:
         raise HTTPException(status_code=400, detail="URL required")
@@ -245,10 +216,14 @@ async def scrape_custom_url(request: ScrapeRequest):
     if not SCRAPERAPI_KEY:
         raise HTTPException(status_code=500, detail="No API key")
     
-    logger.info(f"🔗 Scraping custom URL")
+    logger.info(f"🔗 Scraping URL: {request.url[:100]}")
     
     result = await scrape_with_scraperapi(request.url, request.use_js)
     result['identifier'] = request.identifier
+    
+    # וודא שמחזיר את ה-HTML המלא
+    if result['success'] and result.get('html_content'):
+        logger.info(f"✅ Returning {len(result['html_content'])} bytes of HTML")
     
     return result
 
