@@ -14,7 +14,7 @@ from typing import Optional, Dict, Any
 import re
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import uvicorn
+
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -535,6 +535,8 @@ async def start_background_tasks():
     asyncio.create_task(keep_alive_task())
 
 if __name__ == "__main__":
+    import uvicorn  # 🔥 העבר את ה-import לפה!
+    
     port = int(os.environ.get("PORT", 8000))
     
     logger.info("=" * 60)
@@ -551,7 +553,8 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         log_level="info",
-        timeout_keep_alive=120,  # Keep connections alive for 120 seconds
-        timeout_notify=100,      # Notify before timeout
-        limit_max_requests=10000  # Don't restart workers too often
+        timeout_keep_alive=120,
+        # הסר את השורות הבאות - הן גורמות לבעיה
+        # timeout_notify=100,
+        # limit_max_requests=10000
     )
