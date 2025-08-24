@@ -1,99 +1,313 @@
+// server.js - Enhanced Scraper with Multiple Strategies
 const express = require('express');
-const puppeteer = require('puppeteer');
-const puppeteerExtra = require('puppeteer-extra');
+const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const RecaptchaPlugin = require('puppeteer-extra-plugin-recaptcha');
+const AdblockerPlugin = require('puppeteer-extra-plugin-adblocker');
 
-// Use stealth plugin to avoid detection
-puppeteerExtra.use(StealthPlugin());
+// Configure stealth plugin with all evasions
+const stealth = StealthPlugin();
+stealth.enabledEvasions.delete('chrome.runtime'); // Can cause issues in some cases
+puppeteer.use(stealth);
+
+// Add recaptcha solver (optional - requires 2captcha API key)
+puppeteer.use(RecaptchaPlugin({
+    provider: { id: '2captcha', token: process.env.CAPTCHA_KEY || '' },
+    visualFeedback: true
+}));
+
+// Block ads and trackers for faster loading
+puppeteer.use(AdblockerPlugin({ blockTrackers: true }));
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 8080;
 
-// Browser pool for better performance
-const browserPool = [];
-const MAX_BROWSERS = 3;
-let currentBrowserIndex = 0;
+// ====== CONFIGURATION ======
+const CONFIG = {
+    // Browser settings optimized for Railway
+    BROWSER_ARGS: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-zygote',
+        '--deterministic-fetch',
+        '--disable-features=IsolateOrigins',
+        '--disable-site-isolation-trials',
+        
+        // Anti-detection
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=site-per-process',
+        '--window-size=1920,1080',
+        
+        // Performance
+        '--disable-web-security',
+        '--disable-features=VizDisplayCompositor',
+        '--disable-breakpad',
+        '--disable-software-rasterizer',
+        '--disable-extensions',
+        '--disable-sync',
+        
+        // Memory optimization for Railway
+        '--max_old_space_size=460',
+        '--memory-pressure-off',
+        '--js-flags=--max-old-space-size=460',
+        
+        // Network
+        '--aggressive-cache-discard',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding'
+    ],
+    
+    // Cloudflare bypass strategies
+    CLOUDFLARE_SELECTORS: [
+        'div.cf-browser-verification',
+        '#cf-content',
+        'div[class*="cf-"]',
+        'form[id="challenge-form"]',
+        'input[name="cf_captcha_kind"]',
+        'div[class*="challenge"]',
+        'div.main-wrapper div.main-content',
+        'h1 span[data-translate="checking_browser"]'
+    ],
+    
+    // User agents that work well with Cloudflare
+    USER_AGENTS: [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    ]
+};
 
-// Optimized browser args
-const BROWSER_ARGS = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-accelerated-2d-canvas',
-    '--no-first-run',
-    '--no-zygote',
-    '--disable-blink-features=AutomationControlled',
-    '--disable-features=site-per-process',
-    '--window-size=1920,1080',
-    '--start-maximized',
-    // Performance optimizations
-    '--disable-backgrounding-occluded-windows',
-    '--disable-renderer-backgrounding',
-    '--disable-features=TranslateUI',
-    '--disable-ipc-flooding-protection',
-    // Memory optimizations
-    '--max_old_space_size=4096',
-    '--memory-pressure-off',
-];
-
-// Initialize browser pool
-async function initBrowserPool() {
-    console.log('🚀 Initializing browser pool...');
-    for (let i = 0; i < MAX_BROWSERS; i++) {
-        const browser = await puppeteerExtra.launch({
+// ====== BROWSER POOL ======
+class BrowserPool {
+    constructor(size = 2) { // Limited to 2 for Railway memory constraints
+        this.browsers = [];
+        this.size = size;
+        this.currentIndex = 0;
+        this.isInitialized = false;
+    }
+    
+    async init() {
+        if (this.isInitialized) return;
+        
+        console.log('🚀 Initializing browser pool...');
+        for (let i = 0; i < this.size; i++) {
+            try {
+                const browser = await this.createBrowser();
+                this.browsers.push(browser);
+                console.log(`✅ Browser ${i + 1} initialized`);
+            } catch (error) {
+                console.error(`❌ Failed to initialize browser ${i + 1}:`, error.message);
+            }
+        }
+        this.isInitialized = true;
+    }
+    
+    async createBrowser() {
+        return await puppeteer.launch({
             headless: 'new',
-            args: BROWSER_ARGS,
+            args: CONFIG.BROWSER_ARGS,
             ignoreDefaultArgs: ['--enable-automation'],
-            // Increase protocol timeout for complex pages
+            defaultViewport: { width: 1920, height: 1080 },
             protocolTimeout: 30000,
+            ignoreHTTPSErrors: true
         });
-        browserPool.push(browser);
-        console.log(`✅ Browser ${i + 1} initialized`);
+    }
+    
+    async getBrowser() {
+        if (!this.isInitialized) await this.init();
+        
+        if (this.browsers.length === 0) {
+            throw new Error('No browsers available');
+        }
+        
+        const browser = this.browsers[this.currentIndex];
+        this.currentIndex = (this.currentIndex + 1) % this.browsers.length;
+        
+        // Check if browser is still connected
+        if (!browser.isConnected()) {
+            console.log('🔄 Recreating disconnected browser...');
+            const newBrowser = await this.createBrowser();
+            this.browsers[this.currentIndex] = newBrowser;
+            return newBrowser;
+        }
+        
+        return browser;
+    }
+    
+    async cleanup() {
+        for (const browser of this.browsers) {
+            try {
+                await browser.close();
+            } catch (e) {
+                // Ignore errors during cleanup
+            }
+        }
+        this.browsers = [];
+        this.isInitialized = false;
     }
 }
 
-// Get next browser from pool (round-robin)
-function getNextBrowser() {
-    const browser = browserPool[currentBrowserIndex];
-    currentBrowserIndex = (currentBrowserIndex + 1) % MAX_BROWSERS;
-    return browser;
+const browserPool = new BrowserPool(2);
+
+// ====== CLOUDFLARE BYPASS ======
+class CloudflareBypass {
+    static async detectAndBypass(page, timeout = 15000) {
+        const startTime = Date.now();
+        
+        try {
+            // Check if Cloudflare challenge is present
+            const hasChallenge = await this.detectChallenge(page);
+            
+            if (!hasChallenge) {
+                console.log('✅ No Cloudflare challenge detected');
+                return true;
+            }
+            
+            console.log('⚠️ Cloudflare challenge detected, attempting bypass...');
+            
+            // Strategy 1: Wait for automatic resolution
+            const autoResolved = await this.waitForAutoResolve(page, timeout);
+            if (autoResolved) {
+                console.log('✅ Cloudflare challenge auto-resolved');
+                return true;
+            }
+            
+            // Strategy 2: Trigger manual interactions
+            const manualResolved = await this.tryManualBypass(page);
+            if (manualResolved) {
+                console.log('✅ Cloudflare challenge manually resolved');
+                return true;
+            }
+            
+            // Strategy 3: Reload and retry
+            console.log('🔄 Reloading page...');
+            await page.reload({ waitUntil: 'networkidle0', timeout: 10000 });
+            
+            const hasChallenge2 = await this.detectChallenge(page);
+            if (!hasChallenge2) {
+                console.log('✅ Cloudflare challenge resolved after reload');
+                return true;
+            }
+            
+        } catch (error) {
+            console.error('❌ Cloudflare bypass error:', error.message);
+        }
+        
+        const elapsed = Date.now() - startTime;
+        console.log(`⏱️ Cloudflare bypass attempt took ${elapsed}ms`);
+        return false;
+    }
+    
+    static async detectChallenge(page) {
+        try {
+            // Check page title
+            const title = await page.title();
+            if (title.includes('Just a moment') || title.includes('Checking your browser')) {
+                return true;
+            }
+            
+            // Check for challenge elements
+            for (const selector of CONFIG.CLOUDFLARE_SELECTORS) {
+                const element = await page.$(selector);
+                if (element) return true;
+            }
+            
+            // Check page content
+            const content = await page.content();
+            if (content.includes('cf-browser-verification') || 
+                content.includes('cf_chl_prog') ||
+                content.includes('cf-challenge')) {
+                return true;
+            }
+            
+            return false;
+        } catch (error) {
+            return false;
+        }
+    }
+    
+    static async waitForAutoResolve(page, timeout) {
+        try {
+            await page.waitForFunction(
+                () => {
+                    const title = document.title;
+                    return !title.includes('Just a moment') && 
+                           !title.includes('Checking your browser') &&
+                           !document.querySelector('#cf-content') &&
+                           !document.querySelector('.cf-browser-verification');
+                },
+                { timeout: timeout }
+            );
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+    
+    static async tryManualBypass(page) {
+        try {
+            // Try to find and click any challenge button
+            const buttons = await page.$$('button, input[type="submit"]');
+            for (const button of buttons) {
+                const text = await page.evaluate(el => el.textContent, button);
+                if (text && (text.includes('Verify') || text.includes('Continue'))) {
+                    await button.click();
+                    await page.waitForTimeout(3000);
+                    return !(await this.detectChallenge(page));
+                }
+            }
+            
+            // Try mouse movement and clicks (sometimes helps)
+            await page.mouse.move(100, 100);
+            await page.mouse.move(200, 200);
+            await page.mouse.click(500, 300);
+            
+            return false;
+        } catch (error) {
+            return false;
+        }
+    }
 }
 
-// Advanced scraping with Cloudflare bypass
-async function scrapeWithBypass(url, options = {}) {
-    const startTime = Date.now();
-    const browser = getNextBrowser();
+// ====== MAIN SCRAPING FUNCTION ======
+async function scrapeWithStrategies(url, options = {}) {
+    const browser = await browserPool.getBrowser();
     let page = null;
     
     try {
-        // Create page with optimal settings
         page = await browser.newPage();
         
-        // Set viewport for better compatibility
-        await page.setViewport({ width: 1920, height: 1080 });
+        // Set random user agent
+        const userAgent = CONFIG.USER_AGENTS[Math.floor(Math.random() * CONFIG.USER_AGENTS.length)];
+        await page.setUserAgent(userAgent);
         
-        // Advanced headers to look more real
-        await page.setExtraHTTPHeaders({
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
+        // Set realistic viewport
+        await page.setViewport({ 
+            width: 1920, 
+            height: 1080,
+            deviceScaleFactor: 1,
+            hasTouch: false,
+            isLandscape: true,
+            isMobile: false
         });
         
-        // Override navigator properties to avoid detection
+        // Override navigator properties for better stealth
         await page.evaluateOnNewDocument(() => {
-            // Override the navigator.webdriver property
+            // Override webdriver
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
             
-            // Override navigator.plugins to look more real
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
+            // Override chrome
+            window.chrome = {
+                runtime: {},
+            };
             
             // Override permissions
             const originalQuery = window.navigator.permissions.query;
@@ -102,85 +316,103 @@ async function scrapeWithBypass(url, options = {}) {
                     Promise.resolve({ state: Notification.permission }) :
                     originalQuery(parameters)
             );
+            
+            // Override plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5],
+            });
+            
+            // Override languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en'],
+            });
         });
         
-        console.log(`🔗 Navigating to: ${url}`);
+        // Set extra headers
+        await page.setExtraHTTPHeaders({
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        });
         
-        // Smart resource blocking - allow only what we need
-        if (options.blockResources) {
+        // Enable request interception for optimization
+        if (options.blockResources !== false) {
             await page.setRequestInterception(true);
             page.on('request', (req) => {
                 const resourceType = req.resourceType();
-                const url = req.url();
                 
-                // Block unnecessary resources but keep JS for dynamic content
-                if (['image', 'media', 'font', 'texttrack', 'object', 'beacon', 'csp_report', 'imageset'].includes(resourceType)) {
+                // Block unnecessary resources
+                if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
                     req.abort();
-                } 
-                // Block tracking and ads
-                else if (url.includes('google-analytics') || url.includes('doubleclick') || url.includes('facebook')) {
+                } else if (req.url().includes('google-analytics') || 
+                          req.url().includes('doubleclick') || 
+                          req.url().includes('facebook')) {
                     req.abort();
-                }
-                else {
+                } else {
                     req.continue();
                 }
             });
         }
         
-        // Navigate with smart waiting
-        const response = await page.goto(url, {
-            waitUntil: options.waitUntil || 'networkidle0',
-            timeout: options.timeout || 20000
-        });
+        console.log(`📍 Navigating to: ${url}`);
         
-        // Wait for any redirects or dynamic content
-        await page.waitForTimeout(1000);
-        
-        // Check for Cloudflare challenge
-        const isCloudflareChallenge = await page.evaluate(() => {
-            return document.title.includes('Just a moment') || 
-                   document.querySelector('#cf-content') !== null ||
-                   document.querySelector('.cf-browser-verification') !== null;
-        });
-        
-        if (isCloudflareChallenge) {
-            console.log('⚠️ Cloudflare challenge detected, waiting...');
-            
-            // Wait for Cloudflare to resolve (max 10 seconds)
-            try {
-                await page.waitForFunction(
-                    () => !document.title.includes('Just a moment') && 
-                         !document.querySelector('#cf-content') &&
-                         !document.querySelector('.cf-browser-verification'),
-                    { timeout: 10000 }
-                );
-                console.log('✅ Cloudflare challenge passed!');
-            } catch (e) {
-                console.log('⏱️ Cloudflare timeout, continuing anyway...');
-            }
-        }
-        
-        // Get final URL after all redirects
-        const finalUrl = page.url();
-        console.log(`📍 Final URL: ${finalUrl}`);
-        
-        // Get page content
-        const content = await page.content();
-        
-        // Get cookies
-        const cookies = await page.cookies();
-        
-        // Take screenshot if needed (optional)
-        let screenshot = null;
-        if (options.screenshot) {
-            screenshot = await page.screenshot({ 
-                encoding: 'base64',
-                fullPage: false 
+        // Navigate with multiple strategies
+        let response;
+        try {
+            response = await page.goto(url, {
+                waitUntil: options.waitUntil || 'networkidle2',
+                timeout: options.timeout || 30000
+            });
+        } catch (navError) {
+            console.log('⚠️ Initial navigation failed, trying domcontentloaded...');
+            response = await page.goto(url, {
+                waitUntil: 'domcontentloaded',
+                timeout: 15000
             });
         }
         
-        const elapsed = Date.now() - startTime;
-        console.log(`✅ Scraping completed in ${elapsed}ms`);
+        // Check and bypass Cloudflare if needed
+        await CloudflareBypass.detectAndBypass(page, 15000);
+        
+        // Additional wait for dynamic content
+        await page.waitForTimeout(2000);
+        
+        // For PartsOuq specific handling
+        if (url.includes('partsouq.com')) {
+            console.log('🔧 Applying PartsOuq specific handling...');
+            
+            // Wait for specific elements
+            try {
+                await page.waitForSelector('a[href*="/catalog/genuine/"]', { timeout: 5000 });
+            } catch (e) {
+                console.log('⚠️ Catalog link not found immediately');
+            }
+            
+            // Scroll to trigger lazy loading
+            await page.evaluate(() => {
+                window.scrollTo(0, document.body.scrollHeight / 2);
+            });
+            await page.waitForTimeout(1000);
+        }
+        
+        // Get final content
+        const content = await page.content();
+        const finalUrl = page.url();
+        const cookies = await page.cookies();
+        
+        // Extract any SSD parameter if present
+        let ssdParam = null;
+        const urlObj = new URL(finalUrl);
+        if (urlObj.searchParams.has('ssd')) {
+            ssdParam = urlObj.searchParams.get('ssd');
+            console.log(`🔑 Found SSD parameter: ${ssdParam.substring(0, 50)}...`);
+        }
+        
+        console.log(`✅ Scraping completed successfully`);
+        console.log(`📊 Content size: ${content.length} bytes`);
         
         return {
             success: true,
@@ -188,69 +420,39 @@ async function scrapeWithBypass(url, options = {}) {
             originalUrl: url,
             content: content,
             cookies: cookies,
-            screenshot: screenshot,
-            elapsed: elapsed,
-            statusCode: response?.status() || 200,
-            headers: response?.headers() || {}
+            ssdParam: ssdParam,
+            headers: response?.headers() || {},
+            statusCode: response?.status() || 200
         };
         
     } catch (error) {
         console.error('❌ Scraping error:', error.message);
-        
-        // Try fallback with simpler approach
-        if (options.fallback !== false) {
-            console.log('🔄 Trying fallback approach...');
-            return await fallbackScrape(url, browser);
-        }
-        
         throw error;
         
     } finally {
         if (page) {
-            await page.close().catch(() => {});
+            try {
+                await page.close();
+            } catch (e) {
+                // Ignore close errors
+            }
         }
     }
 }
 
-// Fallback scraping method (simpler, faster)
-async function fallbackScrape(url, browser) {
-    const page = await browser.newPage();
-    
-    try {
-        // Minimal setup for speed
-        await page.goto(url, {
-            waitUntil: 'domcontentloaded',
-            timeout: 10000
-        });
-        
-        await page.waitForTimeout(1000);
-        
-        const finalUrl = page.url();
-        const content = await page.content();
-        
-        return {
-            success: true,
-            url: finalUrl,
-            content: content,
-            fallback: true
-        };
-        
-    } finally {
-        await page.close().catch(() => {});
-    }
-}
+// ====== API ENDPOINTS ======
 
-// Main endpoint - compatible with FlareSolverr
+// Main scraping endpoint (FlareSolverr compatible)
 app.post('/v1', async (req, res) => {
     const startTime = Date.now();
     
     try {
-        const { cmd, url, maxTimeout = 20000, ...options } = req.body;
+        const { cmd, url, maxTimeout = 30000, session, ...options } = req.body;
         
         if (cmd !== 'request.get') {
-            return res.json({
+            return res.status(400).json({
                 status: 'error',
-                message: `Command ${cmd} not supported`
+                message: `Command ${cmd} not supported. Use request.get`
             });
         }
         
@@ -261,25 +463,19 @@ app.post('/v1', async (req, res) => {
             });
         }
         
-        console.log(`\n${'='.repeat(50)}`);
-        console.log(`🚀 FULL SCRAPING REQUEST`);
+        console.log('\n' + '='.repeat(60));
+        console.log(`🚀 SCRAPING REQUEST`);
         console.log(`📍 URL: ${url}`);
         console.log(`⏱️ Max timeout: ${maxTimeout}ms`);
-        console.log(`${'='.repeat(50)}\n`);
+        console.log(`🔒 Session: ${session || 'none'}`);
+        console.log('='.repeat(60) + '\n');
         
-        // Execute scraping
-        const result = await scrapeWithBypass(url, {
+        const result = await scrapeWithStrategies(url, {
             timeout: maxTimeout,
-            blockResources: true,
-            waitUntil: 'networkidle0',
             ...options
         });
         
         const totalTime = Date.now() - startTime;
-        
-        console.log(`\n✅ SUCCESS in ${totalTime}ms`);
-        console.log(`📍 Final URL: ${result.url}`);
-        console.log(`📄 Content size: ${result.content.length} bytes\n`);
         
         // Return FlareSolverr-compatible response
         res.json({
@@ -291,11 +487,11 @@ app.post('/v1', async (req, res) => {
                 headers: result.headers,
                 response: result.content,
                 cookies: result.cookies,
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                userAgent: CONFIG.USER_AGENTS[0]
             },
             startTimestamp: startTime,
             endTimestamp: Date.now(),
-            version: '1.0.0-ULTRA'
+            version: '1.0.0'
         });
         
     } catch (error) {
@@ -309,25 +505,29 @@ app.post('/v1', async (req, res) => {
     }
 });
 
-// Quick URL check endpoint (for fast ssd parameter checking)
+// Quick check endpoint
 app.post('/quick', async (req, res) => {
-    const { url } = req.body;
-    const browser = getNextBrowser();
-    const page = await browser.newPage();
-    
     try {
-        await page.goto(url, {
-            waitUntil: 'domcontentloaded',
-            timeout: 5000
-        });
+        const { url } = req.body;
         
-        await page.waitForTimeout(1000);
-        const finalUrl = page.url();
+        if (!url) {
+            return res.status(400).json({
+                success: false,
+                error: 'URL is required'
+            });
+        }
+        
+        const result = await scrapeWithStrategies(url, {
+            timeout: 10000,
+            waitUntil: 'domcontentloaded',
+            blockResources: true
+        });
         
         res.json({
             success: true,
-            url: finalUrl,
-            hasSsd: finalUrl.includes('ssd=')
+            url: result.url,
+            hasSsd: result.ssdParam !== null,
+            ssdParam: result.ssdParam
         });
         
     } catch (error) {
@@ -335,113 +535,100 @@ app.post('/quick', async (req, res) => {
             success: false,
             error: error.message
         });
-    } finally {
-        await page.close();
     }
 });
 
 // Health check
 app.get('/health', async (req, res) => {
+    const memUsage = process.memoryUsage();
     res.json({
         status: 'healthy',
-        browsers: browserPool.length,
-        mode: 'FULL_SCRAPER',
-        version: '1.0.0-ULTRA'
+        memory: {
+            used: Math.round(memUsage.heapUsed / 1024 / 1024) + 'MB',
+            total: Math.round(memUsage.heapTotal / 1024 / 1024) + 'MB'
+        },
+        browsers: browserPool.browsers.length,
+        uptime: process.uptime()
     });
 });
 
-// Stats endpoint
-app.get('/stats', (req, res) => {
-    res.json({
-        browsers: browserPool.length,
-        currentIndex: currentBrowserIndex,
-        uptime: process.uptime(),
-        memory: process.memoryUsage()
-    });
-});
-
-// Root
+// Root endpoint
 app.get('/', (req, res) => {
     res.send(`
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Ultra Fast Full Scraper</title>
+            <title>Enhanced Cloud Scraper</title>
             <style>
-                body { font-family: Arial; padding: 20px; background: #1a1a1a; color: #fff; }
-                h1 { color: #4CAF50; }
-                .feature { background: #2a2a2a; padding: 10px; margin: 5px 0; border-radius: 5px; }
-                .endpoint { background: #333; padding: 10px; margin: 10px 0; border-radius: 5px; }
-                code { background: #000; padding: 2px 5px; border-radius: 3px; }
+                body { 
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                    padding: 40px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                }
+                .container {
+                    max-width: 800px;
+                    margin: 0 auto;
+                    background: rgba(255, 255, 255, 0.1);
+                    padding: 30px;
+                    border-radius: 15px;
+                    backdrop-filter: blur(10px);
+                }
+                h1 { 
+                    margin: 0 0 20px 0;
+                    font-size: 2.5em;
+                }
+                .feature {
+                    background: rgba(255, 255, 255, 0.1);
+                    padding: 15px;
+                    margin: 10px 0;
+                    border-radius: 8px;
+                    border-left: 4px solid #4CAF50;
+                }
+                .endpoint {
+                    background: rgba(0, 0, 0, 0.2);
+                    padding: 15px;
+                    margin: 15px 0;
+                    border-radius: 8px;
+                    font-family: 'Courier New', monospace;
+                }
+                code {
+                    background: rgba(0, 0, 0, 0.3);
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                }
             </style>
         </head>
         <body>
-            <h1>⚡ Ultra Fast Full Scraper v1.0</h1>
-            <p><strong>FlareSolverr Compatible + Faster!</strong></p>
-            
-            <h2>✨ Features:</h2>
-            <div class="feature">✅ Full page scraping with JavaScript</div>
-            <div class="feature">✅ Cloudflare bypass capabilities</div>
-            <div class="feature">✅ Browser pool for performance</div>
-            <div class="feature">✅ Stealth mode to avoid detection</div>
-            <div class="feature">✅ Smart resource blocking</div>
-            <div class="feature">✅ FlareSolverr API compatible</div>
-            
-            <h2>🔧 Endpoints:</h2>
-            <div class="endpoint">
-                <strong>POST /v1</strong> - Full scraping (FlareSolverr compatible)<br>
-                <code>{"cmd": "request.get", "url": "https://example.com"}</code>
+            <div class="container">
+                <h1>⚡ Enhanced Cloud Scraper</h1>
+                <p><strong>Optimized for Railway.app deployment</strong></p>
+                
+                <h2>✨ Features:</h2>
+                <div class="feature">✅ Cloudflare bypass with multiple strategies</div>
+                <div class="feature">✅ Memory optimized for 512MB limit</div>
+                <div class="feature">✅ FlareSolverr API compatible</div>
+                <div class="feature">✅ Stealth mode with anti-detection</div>
+                <div class="feature">✅ Smart resource blocking</div>
+                <div class="feature">✅ Session management</div>
+                
+                <h2>🔧 Endpoints:</h2>
+                <div class="endpoint">
+                    <strong>POST /v1</strong><br>
+                    FlareSolverr compatible endpoint<br>
+                    <code>{"cmd": "request.get", "url": "https://example.com"}</code>
+                </div>
+                <div class="endpoint">
+                    <strong>POST /quick</strong><br>
+                    Quick URL check<br>
+                    <code>{"url": "https://example.com"}</code>
+                </div>
+                <div class="endpoint">
+                    <strong>GET /health</strong><br>
+                    Health check and metrics
+                </div>
             </div>
-            <div class="endpoint">
-                <strong>POST /quick</strong> - Quick URL check<br>
-                <code>{"url": "https://example.com"}</code>
-            </div>
-            <div class="endpoint">
-                <strong>GET /health</strong> - Health check
-            </div>
-            <div class="endpoint">
-                <strong>GET /stats</strong> - Statistics
-            </div>
-            
-            <h2>📊 Performance:</h2>
-            <p>Target: 8-15 seconds for full scrape (vs 20-30s FlareSolverr)</p>
-            <p>Browsers: ${browserPool.length}/${MAX_BROWSERS}</p>
         </body>
         </html>
     `);
-});
-
-// Start server
-app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`
-╔════════════════════════════════════════════╗
-║   ⚡ ULTRA FAST FULL SCRAPER v1.0         ║
-║   Port: ${PORT}                              ║
-║   Mode: Full Scraping + Cloudflare Bypass ║
-║   Browsers: ${MAX_BROWSERS}                              ║
-║   Compatible: FlareSolverr API            ║
-╚════════════════════════════════════════════╝
-    `);
-    
-    console.log('🚀 Initializing browser pool...');
-    await initBrowserPool();
-    console.log('✅ Ready for FAST full scraping!');
-});
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-    console.log('🔴 Shutting down...');
-    for (const browser of browserPool) {
-        await browser.close();
-    }
-    process.exit(0);
-});
-
-// Error handling
-process.on('uncaughtException', (error) => {
-    console.error('💥 Uncaught Exception:', error);
-});
-
-process.on('unhandledRejection', (error) => {
-    console.error('💥 Unhandled Rejection:', error);
 });
