@@ -1,7 +1,7 @@
 {
   "name": "enhanced-cloud-scraper",
   "version": "1.0.0",
-  "description": "Enhanced cloud scraper with Cloudflare bypass optimized for Railway",
+  "description": "Enhanced cloud scraper with Cloudflare bypass",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
