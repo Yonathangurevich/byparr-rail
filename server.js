@@ -1,3 +1,4 @@
+
 // server.js - Enhanced Scraper with Multiple Strategies
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
@@ -631,4 +632,55 @@ app.get('/', (req, res) => {
         </body>
         </html>
     `);
+});
+
+// ====== SERVER STARTUP ======
+async function startServer() {
+    try {
+        // Initialize browser pool
+        await browserPool.init();
+        
+        // Start server
+        app.listen(PORT, '0.0.0.0', () => {
+            console.log(`
+╔════════════════════════════════════════════╗
+║   ⚡ ENHANCED CLOUD SCRAPER                ║
+║   Port: ${PORT}                              ║
+║   Mode: Cloudflare Bypass Enabled         ║
+║   Memory Optimized for Railway            ║
+║   API: FlareSolverr Compatible            ║
+╚════════════════════════════════════════════╝
+            `);
+            console.log('✅ Server is ready!');
+        });
+        
+    } catch (error) {
+        console.error('❌ Failed to start server:', error);
+        process.exit(1);
+    }
+}
+
+// Start the server
+startServer();
+
+// ====== GRACEFUL SHUTDOWN ======
+process.on('SIGTERM', async () => {
+    console.log('📴 Shutting down gracefully...');
+    await browserPool.cleanup();
+    process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+    console.log('📴 Shutting down gracefully...');
+    await browserPool.cleanup();
+    process.exit(0);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+    console.error('💥 Uncaught Exception:', error);
+});
+
+process.on('unhandledRejection', (error) => {
+    console.error('💥 Unhandled Rejection:', error);
 });
