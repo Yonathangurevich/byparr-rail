@@ -10,9 +10,7 @@
     "express": "^4.18.2",
     "puppeteer": "^21.5.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "puppeteer-extra-plugin-recaptcha": "^3.6.8",
-    "puppeteer-extra-plugin-adblocker-consentless": "^2.13.6"
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "engines": {
     "node": ">=18.0.0"
