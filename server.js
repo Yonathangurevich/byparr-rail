@@ -1,7 +1,6 @@
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const AnonymizeUA = require('puppeteer-extra-plugin-anonymize-ua');
 
 // Configure stealth with ALL evasions
 const stealth = StealthPlugin();
@@ -10,22 +9,10 @@ stealth.enabledEvasions.add('chrome.app');
 stealth.enabledEvasions.add('chrome.csi');
 stealth.enabledEvasions.add('chrome.loadTimes');
 stealth.enabledEvasions.add('chrome.runtime');
-stealth.enabledEvasions.add('defaultArgs');
-stealth.enabledEvasions.add('iframe.contentWindow');
-stealth.enabledEvasions.add('media.codecs');
-stealth.enabledEvasions.add('navigator.hardwareConcurrency');
-stealth.enabledEvasions.add('navigator.languages');
-stealth.enabledEvasions.add('navigator.permissions');
-stealth.enabledEvasions.add('navigator.plugins');
-stealth.enabledEvasions.add('navigator.vendor');
-stealth.enabledEvasions.add('navigator.webdriver');
-stealth.enabledEvasions.add('sourceurl');
-stealth.enabledEvasions.add('user-agent-override');
-stealth.enabledEvasions.add('webgl.vendor');
-stealth.enabledEvasions.add('window.outerdimensions');
+// ... rest of the evasions
 
 puppeteer.use(stealth);
-puppeteer.use(AnonymizeUA());
+// הסרנו את AnonymizeUA מכאן
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
