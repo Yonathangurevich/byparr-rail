@@ -1,7 +1,7 @@
 {
-  "name": "ultra-fast-full-scraper",
+  "name": "enhanced-cloud-scraper",
   "version": "1.0.0",
-  "description": "Ultra-fast full page scraper with Cloudflare bypass",
+  "description": "Enhanced cloud scraper with Cloudflare bypass optimized for Railway",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,7 +10,9 @@
     "express": "^4.18.2",
     "puppeteer": "^21.5.0",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "puppeteer-extra-plugin-recaptcha": "^3.6.8",
+    "puppeteer-extra-plugin-adblocker-consentless": "^2.13.6"
   },
   "engines": {
     "node": ">=18.0.0"
