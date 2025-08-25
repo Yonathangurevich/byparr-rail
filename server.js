@@ -1,142 +1,120 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
+
+// Add stealth plugin to playwright
+chromium.use(stealth);
 
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
 
+// Browser management
 let browserPool = [];
 const MAX_BROWSERS = 1;
+const MAX_PAGES_PER_BROWSER = 50;
 
-// ✅ HEADFUL arguments - כמו Byparr מקומי
-const HEADFUL_ARGS = [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    
-    // ✅ Headful specific - עם XVFB virtual display
-    '--display=:99',
-    '--window-size=1920,1080',
-    '--start-maximized',
-    
-    // Anti-detection
-    '--disable-blink-features=AutomationControlled',
-    '--exclude-switches=enable-automation',
-    '--disable-extensions',
-    '--disable-plugins',
-    '--disable-default-apps',
-    '--disable-web-security',
-    '--disable-features=VizDisplayCompositor',
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-renderer-backgrounding',
-    '--disable-features=TranslateUI',
-    '--disable-hang-monitor',
-    '--disable-ipc-flooding-protection',
-    '--disable-client-side-phishing-detection',
-    '--disable-sync',
-    '--mute-audio',
-    '--no-pings',
-    '--disable-breakpad',
-    '--disable-component-extensions-with-background-pages',
-    '--disable-background-networking',
-    '--disable-prompt-on-repost',
-    '--use-mock-keychain',
-    '--disable-bundled-ppapi-flash',
-    '--no-first-run',
-    '--no-default-browser-check',
-    
-    // ✅ Force real GPU (not headless)
-    '--use-gl=swiftshader',
-    '--enable-webgl'
-];
+console.log('🎭 Initializing Playwright + Stealth Plugin...');
 
-async function createHeadfulBrowser() {
+// ✅ Browser launch options optimized for Cloudflare bypass
+const PLAYWRIGHT_LAUNCH_OPTIONS = {
+    headless: false, // Try headful first, fallback to headless
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=VizDisplayCompositor',
+        '--window-size=1920,1080',
+        '--start-maximized',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--memory-pressure-off',
+        '--max_old_space_size=1024'
+    ],
+    ignoreDefaultArgs: ['--enable-automation'],
+    env: {
+        ...process.env,
+        DISPLAY: ':99'
+    }
+};
+
+// Browser creation with fallback
+async function createPlaywrightBrowser() {
     try {
-        console.log('🖥️ Creating HEADFUL browser (like Byparr local)...');
+        console.log('🎭 Creating Playwright browser with stealth...');
         
-        const browser = await puppeteer.launch({
-            headless: false, // ✅ HEADFUL MODE!
-            args: HEADFUL_ARGS,
-            ignoreDefaultArgs: [
-                '--enable-automation',
-                '--enable-blink-features=AutomationControlled'
-            ],
-            ignoreHTTPSErrors: true,
-            defaultViewport: null,
-            // ✅ תוספות לheadful
-            env: {
-                ...process.env,
-                DISPLAY: ':99' // XVFB display
-            }
-        });
+        // Try headful first
+        const browser = await chromium.launch(PLAYWRIGHT_LAUNCH_OPTIONS);
         
-        console.log('✅ HEADFUL browser created successfully!');
+        console.log('✅ Playwright browser (headful) created successfully!');
         
-        return { 
-            browser, 
-            busy: false, 
+        return {
+            browser,
+            busy: false,
             id: Date.now() + Math.random(),
-            requests: 0,
-            created: Date.now()
+            pages: 0,
+            created: Date.now(),
+            isHeadless: false
         };
-    } catch (error) {
-        console.error('❌ Failed to create HEADFUL browser:', error.message);
         
-        // ✅ Fallback to headless if headful fails
-        console.log('🔄 Falling back to headless mode...');
+    } catch (error) {
+        console.log('⚠️ Headful failed, trying headless...', error.message);
+        
         try {
-            const browser = await puppeteer.launch({
-                headless: 'new',
-                args: HEADFUL_ARGS.filter(arg => !arg.includes('display') && !arg.includes('start-maximized')),
-                ignoreDefaultArgs: ['--enable-automation'],
-                ignoreHTTPSErrors: true,
-                defaultViewport: null
-            });
+            // Fallback to headless
+            const headlessOptions = {
+                ...PLAYWRIGHT_LAUNCH_OPTIONS,
+                headless: true,
+                args: PLAYWRIGHT_LAUNCH_OPTIONS.args.filter(arg => 
+                    !arg.includes('start-maximized') && !arg.includes('window-size')
+                )
+            };
             
-            console.log('✅ Fallback headless browser created');
+            const browser = await chromium.launch(headlessOptions);
+            console.log('✅ Playwright browser (headless fallback) created!');
             
-            return { 
-                browser, 
-                busy: false, 
+            return {
+                browser,
+                busy: false,
                 id: Date.now() + Math.random(),
-                requests: 0,
+                pages: 0,
                 created: Date.now(),
                 isHeadless: true
             };
+            
         } catch (fallbackError) {
-            console.error('❌ Fallback also failed:', fallbackError.message);
+            console.error('❌ Both headful and headless failed:', fallbackError.message);
             return null;
         }
     }
 }
 
 async function initBrowserPool() {
-    console.log('🚀 Initializing HEADFUL browser pool...');
+    console.log('🚀 Initializing Playwright browser pool...');
     
-    // ✅ Setup XVFB virtual display first
-    console.log('🖥️ Setting up virtual display (XVFB)...');
-    const { spawn } = require('child_process');
+    // Setup XVFB virtual display for headful mode
+    try {
+        const { spawn } = require('child_process');
+        const xvfb = spawn('Xvfb', [':99', '-screen', '0', '1920x1080x24'], {
+            detached: true,
+            stdio: 'ignore'
+        });
+        process.env.DISPLAY = ':99';
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log('🖥️ Virtual display ready');
+    } catch (xvfbError) {
+        console.log('⚠️ XVFB setup failed, headless will be used:', xvfbError.message);
+    }
     
-    // Start XVFB virtual display
-    const xvfb = spawn('Xvfb', [':99', '-screen', '0', '1920x1080x24'], {
-        detached: true,
-        stdio: 'ignore'
-    });
-    
-    // Set DISPLAY environment variable
-    process.env.DISPLAY = ':99';
-    
-    // Wait a bit for XVFB to start
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    console.log('✅ Virtual display ready');
-    
-    // Now create browser
-    const browserObj = await createHeadfulBrowser();
+    const browserObj = await createPlaywrightBrowser();
     if (browserObj) {
         browserPool.push(browserObj);
-        console.log(`✅ ${browserObj.isHeadless ? 'Headless' : 'HEADFUL'} Browser ready!`);
+        console.log(`✅ Playwright Browser ready (${browserObj.isHeadless ? 'headless' : 'headful'})`);
     }
 }
 
@@ -153,83 +131,59 @@ async function getBrowser() {
     }
     
     if (!browserObj) {
-        throw new Error('No browsers available after wait');
+        throw new Error('No browsers available');
+    }
+    
+    // Recycle browser if used too much
+    if (browserObj.pages >= MAX_PAGES_PER_BROWSER) {
+        console.log(`🔄 Browser reached page limit, recycling...`);
+        await recycleBrowser(browserObj);
     }
     
     browserObj.busy = true;
-    browserObj.requests++;
+    browserObj.pages++;
     
     return browserObj;
+}
+
+async function recycleBrowser(browserObj) {
+    try {
+        await browserObj.browser.close();
+        const newBrowserObj = await createPlaywrightBrowser();
+        if (newBrowserObj) {
+            const index = browserPool.indexOf(browserObj);
+            browserPool[index] = newBrowserObj;
+            console.log('✅ Browser recycled with fresh session');
+        }
+    } catch (error) {
+        console.error('❌ Browser recycle error:', error.message);
+    }
 }
 
 function releaseBrowser(browserObj) {
     if (browserObj) {
         browserObj.busy = false;
-        console.log(`📤 Browser ${browserObj.isHeadless ? '(headless)' : '(HEADFUL)'} released`);
+        console.log(`📤 Playwright browser released (${browserObj.pages} pages used)`);
     }
 }
 
-// ✅ Enhanced page setup for headful mode
-async function setupHeadfulPage(page, isHeadless = false) {
-    console.log(`🔧 Setting up ${isHeadless ? 'headless' : 'HEADFUL'} page...`);
+// ✅ Advanced Playwright page setup
+async function setupPlaywrightPage(context) {
+    console.log('🎭 Setting up Playwright page with stealth...');
     
-    await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
+    const page = await context.newPage();
     
-    // ✅ Enhanced anti-detection for headful
-    await page.evaluateOnNewDocument(() => {
-        // Standard anti-detection
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        delete navigator.__proto__.webdriver;
-        
-        // ✅ Headful-specific properties
-        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-        Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
-        
-        // ✅ Screen properties for real display
-        Object.defineProperty(screen, 'availHeight', { get: () => 1040 });
-        Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
-        Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
-        
-        // Chrome object
-        window.chrome = {
-            runtime: {
-                onConnect: null,
-                onMessage: null,
-                connect: function() { return { postMessage: function() {}, onMessage: { addListener: function() {} } }; },
-                sendMessage: function() {}
-            },
-            loadTimes: function() {
-                return {
-                    commitLoadTime: Date.now() - Math.random() * 1000,
-                    connectionInfo: 'h2',
-                    finishDocumentLoadTime: Date.now() - Math.random() * 500,
-                    finishLoadTime: Date.now() - Math.random() * 300,
-                    navigationType: 'Navigation'
-                };
-            },
-            csi: function() {
-                return {
-                    startE: Date.now() - Math.random() * 1000,
-                    onloadT: Date.now() - Math.random() * 500,
-                    pageT: Date.now() - Math.random() * 800
-                };
-            }
-        };
-        
-        // Plugins
-        Object.defineProperty(navigator, 'plugins', {
-            get: function() {
-                return [
-                    { description: "Chrome PDF Plugin", filename: "internal-pdf-viewer", name: "Chrome PDF Plugin" },
-                    { description: "Native Client", filename: "internal-nacl-plugin", name: "Native Client" }
-                ];
-            }
-        });
-    });
+    // ✅ Enhanced viewport and user agent
+    await page.setViewportSize({ width: 1920, height: 1080 });
     
-    // Headers
+    const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    ];
+    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+    await page.setUserAgent(randomUA);
+    
+    // ✅ Enhanced headers
     await page.setExtraHTTPHeaders({
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
@@ -244,131 +198,100 @@ async function setupHeadfulPage(page, isHeadless = false) {
         'Cache-Control': 'no-cache'
     });
     
-    console.log(`✅ ${isHeadless ? 'Headless' : 'HEADFUL'} page setup complete!`);
+    // ✅ Additional stealth measures
+    await page.addInitScript(() => {
+        // Remove webdriver traces
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        
+        // Add realistic properties
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+        
+        // Chrome object
+        window.chrome = {
+            runtime: {},
+            loadTimes: function() { return {}; },
+            csi: function() { return {}; }
+        };
+    });
+    
+    console.log('✅ Playwright page setup complete with stealth');
     return page;
 }
 
-// ✅ Patient Cloudflare bypass - כמו Byparr
-async function byparrStyleBypass(page, url, maxWaitTime = 180000, fullScraping = false) {
-    console.log('🎯 Byparr-style bypass initiated...');
+// ✅ Playwright Cloudflare bypass
+async function playwrightCloudflareBypass(page, maxWaitTime = 120000) {
+    console.log('🎭 Playwright Cloudflare bypass starting...');
     
     const startTime = Date.now();
     let attempt = 0;
-    const maxPatientTime = maxWaitTime * 0.9;
     
-    while ((Date.now() - startTime) < maxPatientTime) {
+    while ((Date.now() - startTime) < maxWaitTime) {
         attempt++;
         const elapsed = Math.round((Date.now() - startTime) / 1000);
         
-        console.log(`🔄 Byparr attempt ${attempt} - ${elapsed}s (like local Byparr)`);
+        console.log(`🎭 Playwright attempt ${attempt} - ${elapsed}s`);
         
         try {
-            const currentTitle = await page.title();
-            const currentUrl = page.url();
+            const title = await page.title();
+            const url = page.url();
             
-            console.log(`📍 Title: "${currentTitle.substring(0, 60)}..."`);
+            console.log(`📍 Title: "${title.substring(0, 50)}..."`);
             
-            const cloudflareIndicators = [
-                'just a moment', 'checking your browser', 'verifying you are human',
-                'please wait', 'ddos protection', 'cloudflare', 'ray id'
-            ];
+            const cloudflareActive = title.includes('Just a moment') ||
+                                   title.includes('Checking your browser') ||
+                                   title.includes('Verifying you are human');
             
-            const isCloudflareActive = cloudflareIndicators.some(indicator => 
-                currentTitle.toLowerCase().includes(indicator)
-            );
-            
-            const hasSSdParam = currentUrl.includes('ssd=');
-            const urlChanged = currentUrl !== url;
-            
-            if (!isCloudflareActive || hasSSdParam || urlChanged) {
-                // Check for real content
+            if (!cloudflareActive || url.includes('ssd=')) {
                 const hasContent = await page.evaluate(() => {
-                    const bodyText = document.body ? document.body.innerText : '';
-                    const hasRealContent = bodyText.length > 800;
-                    const noCloudflareText = !bodyText.toLowerCase().includes('just a moment') && 
-                                           !bodyText.toLowerCase().includes('checking your browser');
-                    return hasRealContent && noCloudflareText;
-                }).catch(() => false);
+                    const bodyText = document.body?.innerText || '';
+                    return bodyText.length > 800 && !bodyText.includes('Just a moment');
+                });
                 
-                if (hasContent || hasSSdParam) {
-                    console.log(`🎯 Byparr-style SUCCESS after ${elapsed}s!`);
-                    console.log(`✅ Success indicators: content=${hasContent}, ssd=${hasSSdParam}, changed=${urlChanged}`);
-                    
-                    // Final wait for full scraping
-                    if (fullScraping) {
-                        console.log('⏳ Final content stabilization (full mode)...');
-                        await page.waitForTimeout(8000);
-                    } else {
-                        await page.waitForTimeout(3000);
-                    }
-                    
+                if (hasContent || url.includes('ssd=')) {
+                    console.log(`🎭 Playwright SUCCESS after ${elapsed}s!`);
                     return true;
                 }
             }
             
-            if (isCloudflareActive) {
-                console.log('☁️ Cloudflare still active - being patient like Byparr...');
+            if (cloudflareActive) {
+                console.log('☁️ Cloudflare detected, using Playwright techniques...');
                 
-                // ✅ Byparr-style human behavior (less aggressive)
+                // Human-like interactions
                 if (attempt <= 3) {
-                    try {
-                        // Gentle mouse movement
-                        await page.mouse.move(500 + Math.random() * 300, 300 + Math.random() * 200);
-                        await page.waitForTimeout(500);
-                        
-                        // Look for iframes
-                        const iframes = await page.$$('iframe');
-                        if (iframes.length > 0) {
-                            console.log(`🔍 Found ${iframes.length} iframes, checking for Turnstile...`);
+                    await page.mouse.move(500 + Math.random() * 400, 300 + Math.random() * 300);
+                    await page.waitForTimeout(500);
+                    
+                    // Look for iframes and interact
+                    const iframes = page.frames();
+                    if (iframes.length > 1) {
+                        console.log(`🔍 Found ${iframes.length} frames`);
+                        for (const frame of iframes.slice(1, 3)) {
                             try {
-                                const frame = await iframes[0].contentFrame();
-                                if (frame) {
-                                    await frame.click('body').catch(() => {});
-                                    await page.waitForTimeout(1000);
-                                }
+                                await frame.click('body', { timeout: 1000 });
+                                await page.waitForTimeout(1000);
                             } catch (e) {}
                         }
-                        
-                        // Gentle click on page
-                        await page.mouse.click(683, 384);
-                        await page.waitForTimeout(1000);
-                        
-                    } catch (interactionError) {
-                        console.log(`⚠️ Interaction error: ${interactionError.message}`);
                     }
+                    
+                    // Click on page
+                    await page.mouse.click(683, 384);
+                    await page.waitForTimeout(1000);
                 }
                 
-                // ✅ Byparr-style patient wait - starting with shorter waits
-                let waitTime;
-                if (attempt <= 2) {
-                    waitTime = 8000; // 8 seconds first attempts
-                } else if (attempt <= 5) {
-                    waitTime = 15000; // 15 seconds middle attempts  
-                } else {
-                    waitTime = 25000; // 25 seconds later attempts
-                }
+                // Progressive waiting
+                const waitTime = Math.min(8000 + (attempt * 3000), 20000);
+                console.log(`⏳ Playwright wait: ${Math.round(waitTime/1000)}s`);
                 
-                console.log(`⏳ Byparr-style patient wait: ${Math.round(waitTime/1000)}s (attempt ${attempt})`);
-                
-                // Wait with intermediate checks
-                const chunks = Math.ceil(waitTime / 3000);
-                const chunkWait = Math.floor(waitTime / chunks);
-                
-                for (let chunk = 0; chunk < chunks; chunk++) {
-                    await page.waitForTimeout(chunkWait);
+                // Wait with checks
+                const chunks = Math.ceil(waitTime / 2000);
+                for (let i = 0; i < chunks; i++) {
+                    await page.waitForTimeout(2000);
                     
-                    // Intermediate check
-                    const intermediateTitle = await page.title().catch(() => currentTitle);
-                    const intermediateUrl = page.url();
-                    
-                    if (!cloudflareIndicators.some(ind => intermediateTitle.toLowerCase().includes(ind)) ||
-                        intermediateUrl.includes('ssd=')) {
-                        console.log(`🚀 Status changed during wait! Breaking early...`);
+                    const intermediateTitle = await page.title();
+                    if (!intermediateTitle.includes('Just a moment') || page.url().includes('ssd=')) {
+                        console.log('🚀 Status changed during wait!');
                         break;
-                    }
-                    
-                    if (chunk % 2 === 0) {
-                        console.log(`⏳ Byparr waiting... (${Math.round((chunk * chunkWait)/1000)}s/${Math.round(waitTime/1000)}s)`);
                     }
                 }
             }
@@ -376,64 +299,72 @@ async function byparrStyleBypass(page, url, maxWaitTime = 180000, fullScraping =
         } catch (error) {
             console.log(`⚠️ Attempt error: ${error.message}`);
         }
-        
-        if (Date.now() - startTime >= maxPatientTime) {
-            break;
-        }
     }
     
-    const finalElapsed = Math.round((Date.now() - startTime) / 1000);
-    console.log(`⏰ Byparr-style bypass completed after ${finalElapsed}s (${attempt} attempts)`);
-    
-    // Final check
-    const finalUrl = page.url();
-    const hasSSdParam = finalUrl.includes('ssd=');
-    
-    console.log(`🔍 Final status: ssd=${hasSSdParam}, url_length=${finalUrl.length}`);
-    return hasSSdParam;
+    console.log(`⏰ Playwright bypass completed after ${Math.round((Date.now() - startTime) / 1000)}s`);
+    return false;
 }
 
 // Main scraping function
-async function scrapeWithByparrStyle(url, fullScraping = false, maxWaitTime = 180000) {
+async function scrapeWithPlaywright(url, fullScraping = false, maxWaitTime = 180000) {
     const startTime = Date.now();
     let browserObj = null;
+    let context = null;
     let page = null;
     
     try {
-        console.log(`🎯 Starting Byparr-style ${fullScraping ? 'FULL SCRAPING' : 'URL EXTRACTION'}`);
+        console.log(`🎭 Starting Playwright ${fullScraping ? 'FULL SCRAPING' : 'URL EXTRACTION'}`);
         console.log(`🔗 Target: ${url.substring(0, 100)}...`);
-        console.log(`⏰ Max time: ${Math.round(maxWaitTime/1000)}s (like local Byparr)`);
         
         browserObj = await getBrowser();
-        page = await browserObj.browser.newPage();
         
-        await setupHeadfulPage(page, browserObj.isHeadless);
+        // Create context with stealth
+        context = await browserObj.browser.newContext({
+            viewport: { width: 1920, height: 1080 },
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            locale: 'en-US',
+            timezoneId: 'America/New_York',
+            permissions: ['geolocation'],
+            extraHTTPHeaders: {
+                'Accept-Language': 'en-US,en;q=0.9'
+            }
+        });
         
-        console.log('🚀 Navigating like Byparr...');
+        page = await setupPlaywrightPage(context);
         
-        // Navigate with patience
+        console.log('🚀 Navigating with Playwright...');
+        
+        // Navigate
         await page.goto(url, {
-            waitUntil: ['domcontentloaded'],
+            waitUntil: 'domcontentloaded',
             timeout: 60000
         });
         
-        // Initial stabilization
-        console.log('⏳ Initial stabilization (like Byparr)...');
-        await page.waitForTimeout(5000);
+        // Initial wait
+        console.log('⏳ Initial stabilization...');
+        await page.waitForTimeout(4000);
         
-        // Byparr-style bypass
-        const bypassSuccess = await byparrStyleBypass(page, url, maxWaitTime - 15000, fullScraping);
+        // Cloudflare bypass
+        const bypassSuccess = await playwrightCloudflareBypass(page, maxWaitTime - 20000);
         
-        // Final results
+        // Final wait
+        if (fullScraping) {
+            console.log('⏳ Final wait for complete content...');
+            await page.waitForTimeout(6000);
+        } else {
+            await page.waitForTimeout(3000);
+        }
+        
+        // Collect results
         const finalUrl = page.url();
         const html = await page.content();
-        const cookies = await page.cookies();
+        const cookies = await context.cookies();
         const elapsed = Date.now() - startTime;
         
-        console.log(`🎯 Byparr-style completed in ${elapsed}ms`);
+        console.log(`🎭 Playwright completed in ${elapsed}ms`);
         console.log(`🔗 Final URL: ${finalUrl.substring(0, 100)}...`);
         console.log(`📄 Content: ${html.length} bytes`);
-        console.log(`✅ Has ssd param: ${finalUrl.includes('ssd=') ? 'YES ✅' : 'NO ❌'}`);
+        console.log(`🎯 Has ssd param: ${finalUrl.includes('ssd=') ? 'YES ✅' : 'NO ❌'}`);
         
         if (fullScraping) {
             const hasPartsContent = html.includes('part-search') || 
@@ -449,13 +380,12 @@ async function scrapeWithByparrStyle(url, fullScraping = false, maxWaitTime = 18
             cookies: cookies,
             hasSSd: finalUrl.includes('ssd='),
             elapsed: elapsed,
-            scrapingType: fullScraping ? 'byparr_full' : 'byparr_url',
-            bypassSuccess: bypassSuccess,
-            browserMode: browserObj.isHeadless ? 'headless' : 'headful'
+            scrapingType: fullScraping ? 'playwright_full' : 'playwright_url',
+            bypassSuccess: bypassSuccess
         };
         
     } catch (error) {
-        console.error('🎯 Byparr-style scraping error:', error.message);
+        console.error('🎭 Playwright scraping error:', error.message);
         return {
             success: false,
             error: error.message,
@@ -463,13 +393,27 @@ async function scrapeWithByparrStyle(url, fullScraping = false, maxWaitTime = 18
         };
         
     } finally {
-        if (page) {
-            await page.close().catch(() => {});
-        }
-        if (browserObj) {
-            releaseBrowser(browserObj);
-        }
+        if (page) await page.close().catch(() => {});
+        if (context) await context.close().catch(() => {});
+        if (browserObj) releaseBrowser(browserObj);
     }
+}
+
+// Memory cleanup
+async function playwrightMemoryCleanup() {
+    console.log('\n' + '🎭'.repeat(20));
+    console.log('🧹 Playwright memory cleanup...');
+    
+    const memBefore = process.memoryUsage();
+    console.log(`📊 Memory before: ${Math.round(memBefore.heapUsed / 1024 / 1024)}MB`);
+    
+    if (global.gc) global.gc();
+    
+    const memAfter = process.memoryUsage();
+    console.log(`📊 Memory after: ${Math.round(memAfter.heapUsed / 1024 / 1024)}MB`);
+    console.log(`💾 Freed: ${Math.round((memBefore.heapUsed - memAfter.heapUsed) / 1024 / 1024)}MB`);
+    console.log(`🌐 Active browsers: ${browserPool.length}`);
+    console.log('🎭'.repeat(20) + '\n');
 }
 
 // Main endpoint
@@ -480,7 +424,7 @@ app.post('/v1', async (req, res) => {
         const { 
             cmd, 
             url, 
-            maxTimeout = 180000, // 3 minutes default like Byparr
+            maxTimeout = 180000, // 3 minutes default
             session,
             fullScraping = false
         } = req.body;
@@ -492,35 +436,33 @@ app.post('/v1', async (req, res) => {
             });
         }
         
-        console.log(`\n${'🎯'.repeat(25)}`);
-        console.log(`🎯 Byparr-style Request at ${new Date().toISOString()}`);
+        console.log(`\n${'🎭'.repeat(25)}`);
+        console.log(`🎭 Playwright Request at ${new Date().toISOString()}`);
         console.log(`🔗 URL: ${url.substring(0, 100)}...`);
         console.log(`⏱️ Timeout: ${maxTimeout}ms`);
-        console.log(`🎯 Mode: ${fullScraping ? 'BYPARR FULL SCRAPING' : 'BYPARR URL EXTRACTION'}`);
-        console.log(`${'🎯'.repeat(25)}\n`);
+        console.log(`🎯 Mode: ${fullScraping ? 'PLAYWRIGHT FULL' : 'PLAYWRIGHT URL'}`);
+        console.log(`${'🎭'.repeat(25)}\n`);
         
         const result = await Promise.race([
-            scrapeWithByparrStyle(url, fullScraping, maxTimeout),
+            scrapeWithPlaywright(url, fullScraping, maxTimeout),
             new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Byparr-style Timeout')), maxTimeout + 20000)
+                setTimeout(() => reject(new Error('Playwright Timeout')), maxTimeout + 20000)
             )
         ]);
         
         if (result.success) {
             const elapsed = Date.now() - startTime;
             
-            console.log(`\n${'🎯'.repeat(25)}`);
-            console.log(`🎯 BYPARR-STYLE SUCCESS - Total time: ${elapsed}ms`);
-            console.log(`🔗 Final URL: ${result.url?.substring(0, 120) || 'N/A'}...`);
-            console.log(`📄 HTML Length: ${result.html?.length || 0} bytes`);
-            console.log(`✅ Has ssd param: ${result.hasSSd ? 'YES ✅' : 'NO ❌'}`);
-            console.log(`🖥️ Browser mode: ${result.browserMode}`);
-            console.log(`🚀 Scraping type: ${result.scrapingType}`);
-            console.log(`${'🎯'.repeat(25)}\n`);
+            console.log(`\n${'🎭'.repeat(25)}`);
+            console.log(`🎭 PLAYWRIGHT SUCCESS - Total: ${elapsed}ms`);
+            console.log(`🔗 Final URL: ${result.url?.substring(0, 120)}...`);
+            console.log(`📄 HTML: ${result.html?.length || 0} bytes`);
+            console.log(`🎯 Has ssd: ${result.hasSSd ? 'YES ✅' : 'NO ❌'}`);
+            console.log(`${'🎭'.repeat(25)}\n`);
             
             res.json({
                 status: 'ok',
-                message: 'Byparr-style Success',
+                message: 'Playwright Success',
                 solution: {
                     url: result.url || url,
                     status: 200,
@@ -530,20 +472,17 @@ app.post('/v1', async (req, res) => {
                 },
                 startTimestamp: startTime,
                 endTimestamp: Date.now(),
-                version: '6.0.0-BYPARR-STYLE-HEADFUL',
+                version: '7.0.0-PLAYWRIGHT-STEALTH-EDITION',
                 hasSSd: result.hasSSd || false,
                 scrapingType: result.scrapingType,
-                browserMode: result.browserMode,
                 bypassSuccess: result.bypassSuccess
             });
         } else {
-            throw new Error(result.error || 'Byparr-style error');
+            throw new Error(result.error || 'Playwright error');
         }
         
     } catch (error) {
-        console.error(`\n${'🎯'.repeat(25)}`);
-        console.error('🎯 BYPARR-STYLE REQUEST FAILED:', error.message);
-        console.error(`${'🎯'.repeat(25)}\n`);
+        console.error(`🎭 PLAYWRIGHT REQUEST FAILED:`, error.message);
         
         res.status(500).json({
             status: 'error',
@@ -558,7 +497,7 @@ app.get('/health', async (req, res) => {
     const memory = process.memoryUsage();
     
     res.json({
-        status: 'byparr-style-ready',
+        status: 'playwright-stealth-ready',
         uptime: Math.round(process.uptime()) + 's',
         browsers: browserPool.length,
         activeBrowsers: browserPool.filter(b => b.busy).length,
@@ -568,97 +507,75 @@ app.get('/health', async (req, res) => {
             total: Math.round(memory.heapTotal / 1024 / 1024) + 'MB'
         },
         features: [
-            '🎯 Byparr-style behavior',
-            '🖥️ Headful mode (XVFB)',
-            '⏰ Patient waiting strategy',
-            '🔧 Gentle interactions',
-            '🎮 Real display simulation'
+            '🎭 Playwright + Stealth Plugin',
+            '🖥️ Headful mode with XVFB fallback',
+            '⚡ WebSocket connection (faster)',
+            '🔧 Advanced anti-detection',
+            '🍪 Smart context management',
+            '⏰ Patient bypass strategy'
         ]
     });
 });
 
-// Root
+// Root page
 app.get('/', (req, res) => {
     const memory = process.memoryUsage();
-    const browserMode = browserPool.length > 0 ? (browserPool[0].isHeadless ? 'Headless' : 'HEADFUL') : 'Unknown';
+    const browserMode = browserPool.length > 0 ? (browserPool[0].isHeadless ? 'Headless' : 'Headful') : 'Unknown';
     
     res.send(`
-        <h1>🎯 Byparr-Style Puppeteer v6.0</h1>
-        <p><strong>Status:</strong> Mimicking local Byparr behavior</p>
+        <h1>🎭 Playwright Stealth Edition v7.0</h1>
+        <p><strong>Status:</strong> Armed with Microsoft's finest + Stealth</p>
         <p><strong>Browser Mode:</strong> ${browserMode}</p>
         <p><strong>Memory:</strong> ${Math.round(memory.heapUsed / 1024 / 1024)}MB</p>
         
-        <h3>🎯 Byparr Features:</h3>
+        <h3>🎭 Playwright Advantages:</h3>
         <ul>
-            <li>✅ HEADFUL mode with XVFB virtual display</li>
-            <li>✅ Patient waiting strategy (8-25s per attempt)</li>
-            <li>✅ Gentle human interactions</li>
-            <li>✅ Real display properties</li>
-            <li>✅ Cloudflare challenge detection</li>
-            <li>✅ 3-minute default timeout</li>
+            <li>✅ WebSocket connection (faster than HTTP)</li>
+            <li>✅ Microsoft backing & active development</li>
+            <li>✅ Built-in stealth capabilities</li>
+            <li>✅ Better performance than Puppeteer</li>
+            <li>✅ Advanced context management</li>
+            <li>✅ Automatic waiting & retries</li>
+            <li>✅ Cross-browser support</li>
         </ul>
         
-        <h3>🚀 Like Local Byparr:</h3>
-        <p>This tries to replicate the exact behavior of local Byparr that works</p>
-        <p><strong>Success Rate:</strong> Should match local Byparr performance</p>
+        <h3>🚀 Why Playwright Beats Puppeteer:</h3>
+        <ul>
+            <li>📡 WebSocket vs HTTP communication</li>
+            <li>⚡ Faster navigation & interaction</li>
+            <li>🛡️ Better stealth out of the box</li>
+            <li>🔧 More advanced debugging tools</li>
+            <li>🎯 Built-in wait strategies</li>
+        </ul>
         
         <h3>📖 Usage:</h3>
-        <p><code>{"fullScraping": false, "maxTimeout": 180000}</code></p>
+        <p><strong>URL Mode:</strong> <code>{"fullScraping": false}</code></p>
+        <p><strong>Full Mode:</strong> <code>{"fullScraping": true, "maxTimeout": 240000}</code></p>
     `);
 });
-
-// Install XVFB if not available
-async function ensureXVFB() {
-    const { spawn } = require('child_process');
-    
-    try {
-        // Check if XVFB is available
-        spawn('which', ['Xvfb']).on('close', (code) => {
-            if (code !== 0) {
-                console.log('📦 Installing XVFB...');
-                const install = spawn('apt-get', ['update', '&&', 'apt-get', 'install', '-y', 'xvfb'], {
-                    stdio: 'inherit',
-                    shell: true
-                });
-                
-                install.on('close', (installCode) => {
-                    if (installCode === 0) {
-                        console.log('✅ XVFB installed successfully');
-                    } else {
-                        console.log('❌ Failed to install XVFB');
-                    }
-                });
-            }
-        });
-    } catch (error) {
-        console.log('⚠️ XVFB check failed:', error.message);
-    }
-}
 
 // Start server
 app.listen(PORT, '0.0.0.0', async () => {
     console.log(`
 ╔═══════════════════════════════════════════════╗
-║         🎯 Byparr-Style Puppeteer v6.0       ║
-║     HEADFUL MODE - Like Local Byparr         ║
+║       🎭 PLAYWRIGHT STEALTH EDITION v7.0     ║
+║         Microsoft Power + Stealth Plugin     ║
 ║              Port: ${PORT}                       ║
-║         Patient Strategy: 8-25s waits        ║
-║            XVFB Virtual Display               ║
+║        Better than Puppeteer & Selenium      ║
+║           WebSocket > HTTP Requests           ║
 ╚═══════════════════════════════════════════════╝
     `);
     
-    console.log('🖥️ Ensuring XVFB is available...');
-    await ensureXVFB();
-    
-    console.log('🎯 Initializing Byparr-style browser...');
+    console.log('🎭 Loading Playwright stealth arsenal...');
     await initBrowserPool();
     
-    console.log('🚀 BYPARR-STYLE READY - Mimicking local success!');
+    setInterval(playwrightMemoryCleanup, 60000);
+    console.log('🚀 PLAYWRIGHT STEALTH READY FOR CLOUDFLARE DESTRUCTION!');
 });
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
-    console.log('🎯 Byparr-style shutdown...');
+    console.log('🎭 Playwright shutdown sequence...');
     for (const browserObj of browserPool) {
         await browserObj.browser.close().catch(() => {});
     }
@@ -667,9 +584,10 @@ process.on('SIGTERM', async () => {
 });
 
 process.on('uncaughtException', (error) => {
-    console.error('🎯 Byparr Exception:', error.message);
+    console.error('🎭 Playwright Exception:', error.message);
+    if (global.gc) global.gc();
 });
 
 process.on('unhandledRejection', (error) => {
-    console.error('🎯 Byparr Rejection:', error.message);
+    console.error('🎭 Playwright Rejection:', error.message);
 });
