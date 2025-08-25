@@ -8,122 +8,135 @@ const PORT = process.env.PORT || 8080;
 
 let browserPool = [];
 const MAX_BROWSERS = 1;
-const MAX_REQUESTS_PER_BROWSER = 30; // קטן יותר - מחליפים browsers יותר תכופ
 
-// ✅ ULTIMATE Browser arguments - מבוסס על מחקר FlareSolver + Byparr
-const ULTIMATE_BROWSER_ARGS = [
-    // Basic security
+// ✅ HEADFUL arguments - כמו Byparr מקומי
+const HEADFUL_ARGS = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
     
-    // ✅ CRITICAL: Anti-detection מבוסס על undetected-chromedriver
-    '--disable-blink-features=AutomationControlled',
-    '--disable-features=VizDisplayCompositor',
-    '--disable-features=IsolateOrigins,site-per-process',
-    '--exclude-switches=enable-automation',
-    '--disable-extensions-file-access-check',
-    '--disable-plugins-discovery',
-    '--disable-plugins',
-    '--disable-default-apps',
-    
-    // ✅ Browser behavior normalization
+    // ✅ Headful specific - עם XVFB virtual display
+    '--display=:99',
     '--window-size=1920,1080',
     '--start-maximized',
-    '--disable-gpu',
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--disable-default-browser-check',
     
-    // ✅ Memory & Performance (from SeleniumBase research)
+    // Anti-detection
+    '--disable-blink-features=AutomationControlled',
+    '--exclude-switches=enable-automation',
+    '--disable-extensions',
+    '--disable-plugins',
+    '--disable-default-apps',
+    '--disable-web-security',
+    '--disable-features=VizDisplayCompositor',
     '--disable-background-timer-throttling',
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
     '--disable-features=TranslateUI',
     '--disable-hang-monitor',
-    '--memory-pressure-off',
-    '--max_old_space_size=1024',
-    
-    // ✅ Network & Security bypass
-    '--disable-web-security',
-    '--disable-features=VizDisplayCompositor',
     '--disable-ipc-flooding-protection',
     '--disable-client-side-phishing-detection',
     '--disable-sync',
     '--mute-audio',
     '--no-pings',
     '--disable-breakpad',
-    
-    // ✅ ULTIMATE stealth mode
     '--disable-component-extensions-with-background-pages',
     '--disable-background-networking',
     '--disable-prompt-on-repost',
-    '--hide-scrollbars',
     '--use-mock-keychain',
     '--disable-bundled-ppapi-flash',
+    '--no-first-run',
+    '--no-default-browser-check',
     
-    // ✅ User interaction simulation
-    '--enable-features=NetworkServiceLogging',
-    '--disable-logging',
-    '--log-level=3',
-    '--silent',
-    '--disable-dev-tools'
+    // ✅ Force real GPU (not headless)
+    '--use-gl=swiftshader',
+    '--enable-webgl'
 ];
 
-// ✅ Session management כמו FlareSolver
-const activeSessions = new Map();
-const browserStats = new Map();
-
-// ✅ Cookie & Session storage
-let globalCookieJar = new Map();
-
-async function createUltimateBrowser() {
+async function createHeadfulBrowser() {
     try {
-        console.log('🔥 Creating ULTIMATE browser with FlareSolver-style config...');
+        console.log('🖥️ Creating HEADFUL browser (like Byparr local)...');
         
         const browser = await puppeteer.launch({
-            headless: 'new', // עדיין headless אבל עם כל ההסוואות
-            args: ULTIMATE_BROWSER_ARGS,
+            headless: false, // ✅ HEADFUL MODE!
+            args: HEADFUL_ARGS,
             ignoreDefaultArgs: [
                 '--enable-automation',
                 '--enable-blink-features=AutomationControlled'
             ],
             ignoreHTTPSErrors: true,
-            defaultViewport: null // תן לו להשתמש בגודל מלא
+            defaultViewport: null,
+            // ✅ תוספות לheadful
+            env: {
+                ...process.env,
+                DISPLAY: ':99' // XVFB display
+            }
         });
         
-        const browserId = Date.now() + Math.random();
-        browserStats.set(browserId, { 
-            requests: 0, 
-            created: Date.now(),
-            lastUsed: Date.now() 
-        });
+        console.log('✅ HEADFUL browser created successfully!');
         
         return { 
             browser, 
             busy: false, 
-            id: browserId,
+            id: Date.now() + Math.random(),
             requests: 0,
             created: Date.now()
         };
     } catch (error) {
-        console.error('❌ Failed to create ULTIMATE browser:', error.message);
-        return null;
+        console.error('❌ Failed to create HEADFUL browser:', error.message);
+        
+        // ✅ Fallback to headless if headful fails
+        console.log('🔄 Falling back to headless mode...');
+        try {
+            const browser = await puppeteer.launch({
+                headless: 'new',
+                args: HEADFUL_ARGS.filter(arg => !arg.includes('display') && !arg.includes('start-maximized')),
+                ignoreDefaultArgs: ['--enable-automation'],
+                ignoreHTTPSErrors: true,
+                defaultViewport: null
+            });
+            
+            console.log('✅ Fallback headless browser created');
+            
+            return { 
+                browser, 
+                busy: false, 
+                id: Date.now() + Math.random(),
+                requests: 0,
+                created: Date.now(),
+                isHeadless: true
+            };
+        } catch (fallbackError) {
+            console.error('❌ Fallback also failed:', fallbackError.message);
+            return null;
+        }
     }
 }
 
 async function initBrowserPool() {
-    console.log('🚀 Initializing ULTIMATE browser pool...');
-    for (let i = 0; i < MAX_BROWSERS; i++) {
-        try {
-            const browserObj = await createUltimateBrowser();
-            if (browserObj) {
-                browserPool.push(browserObj);
-                console.log(`✅ ULTIMATE Browser ${i + 1} ready for war!`);
-            }
-        } catch (error) {
-            console.error(`❌ Failed to init browser ${i + 1}:`, error.message);
-        }
+    console.log('🚀 Initializing HEADFUL browser pool...');
+    
+    // ✅ Setup XVFB virtual display first
+    console.log('🖥️ Setting up virtual display (XVFB)...');
+    const { spawn } = require('child_process');
+    
+    // Start XVFB virtual display
+    const xvfb = spawn('Xvfb', [':99', '-screen', '0', '1920x1080x24'], {
+        detached: true,
+        stdio: 'ignore'
+    });
+    
+    // Set DISPLAY environment variable
+    process.env.DISPLAY = ':99';
+    
+    // Wait a bit for XVFB to start
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log('✅ Virtual display ready');
+    
+    // Now create browser
+    const browserObj = await createHeadfulBrowser();
+    if (browserObj) {
+        browserPool.push(browserObj);
+        console.log(`✅ ${browserObj.isHeadless ? 'Headless' : 'HEADFUL'} Browser ready!`);
     }
 }
 
@@ -132,7 +145,7 @@ async function getBrowser() {
     
     if (!browserObj) {
         console.log('⏳ All browsers busy, waiting...');
-        for (let i = 0; i < 150; i++) { // המתנה יותר ארוכה
+        for (let i = 0; i < 100; i++) {
             await new Promise(resolve => setTimeout(resolve, 200));
             browserObj = browserPool.find(b => !b.busy);
             if (browserObj) break;
@@ -140,226 +153,85 @@ async function getBrowser() {
     }
     
     if (!browserObj) {
-        throw new Error('No browsers available after long wait');
-    }
-    
-    // מחזור browsers יותר אגרסיבי
-    if (browserObj.requests >= MAX_REQUESTS_PER_BROWSER || 
-        (Date.now() - browserObj.created > 10 * 60 * 1000)) { // כל 10 דקות
-        console.log(`🔄 Browser lifecycle refresh: ${browserObj.requests} requests, ${Math.round((Date.now() - browserObj.created) / 1000)}s old`);
-        await recycleBrowser(browserObj);
+        throw new Error('No browsers available after wait');
     }
     
     browserObj.busy = true;
     browserObj.requests++;
-    browserStats.get(browserObj.id).lastUsed = Date.now();
     
     return browserObj;
-}
-
-async function recycleBrowser(browserObj) {
-    try {
-        await browserObj.browser.close();
-        browserStats.delete(browserObj.id);
-        
-        const newBrowserObj = await createUltimateBrowser();
-        if (newBrowserObj) {
-            const index = browserPool.indexOf(browserObj);
-            browserPool[index] = newBrowserObj;
-            console.log(`✅ Browser recycled with fresh fingerprints`);
-        }
-    } catch (error) {
-        console.error('❌ Error recycling browser:', error.message);
-    }
 }
 
 function releaseBrowser(browserObj) {
     if (browserObj) {
         browserObj.busy = false;
-        console.log(`📤 Browser ${browserObj.id.toString().slice(-6)} released`);
+        console.log(`📤 Browser ${browserObj.isHeadless ? '(headless)' : '(HEADFUL)'} released`);
     }
 }
 
-// ✅ ULTIMATE Page Setup - מבוסס על מחקר Byparr
-async function setupUltimatePage(page) {
-    console.log('🔧 Setting up ULTIMATE page stealth...');
+// ✅ Enhanced page setup for headful mode
+async function setupHeadfulPage(page, isHeadless = false) {
+    console.log(`🔧 Setting up ${isHeadless ? 'headless' : 'HEADFUL'} page...`);
     
-    // ✅ הגדרת viewport מציאותי
     await page.setViewport({ width: 1920, height: 1080 });
+    await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36');
     
-    // ✅ User Agent מעודכן ואמיתי
-    const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    ];
-    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-    await page.setUserAgent(randomUA);
-    
-    // ✅ ULTIMATE Anti-detection injection - מבוסס על undetected-chromedriver
+    // ✅ Enhanced anti-detection for headful
     await page.evaluateOnNewDocument(() => {
-        // מחיקה מלאה של webdriver
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
-        });
+        // Standard anti-detection
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         delete navigator.__proto__.webdriver;
         
-        // Chrome object מלא ומתקדם
+        // ✅ Headful-specific properties
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+        Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+        
+        // ✅ Screen properties for real display
+        Object.defineProperty(screen, 'availHeight', { get: () => 1040 });
+        Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
+        Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+        
+        // Chrome object
         window.chrome = {
             runtime: {
                 onConnect: null,
                 onMessage: null,
                 connect: function() { return { postMessage: function() {}, onMessage: { addListener: function() {} } }; },
-                sendMessage: function() {},
-                onStartup: { addListener: function() {} },
-                onInstalled: { addListener: function() {} },
-                id: 'mhjfbmdgcfjbbpaeojofohoefgiehjai'
+                sendMessage: function() {}
             },
             loadTimes: function() {
                 return {
-                    commitLoadTime: Date.now() - Math.random() * 2000,
+                    commitLoadTime: Date.now() - Math.random() * 1000,
                     connectionInfo: 'h2',
-                    finishDocumentLoadTime: Date.now() - Math.random() * 1000,
-                    finishLoadTime: Date.now() - Math.random() * 800,
-                    firstPaintAfterLoadTime: Date.now() - Math.random() * 500,
-                    firstPaintTime: Date.now() - Math.random() * 700,
-                    navigationType: 'Navigation',
-                    npnNegotiatedProtocol: 'h2',
-                    requestTime: Date.now() - Math.random() * 3000,
-                    startLoadTime: Date.now() - Math.random() * 2500,
-                    wasAlternateProtocolAvailable: true,
-                    wasFetchedViaSpdy: true,
-                    wasNpnNegotiated: true
+                    finishDocumentLoadTime: Date.now() - Math.random() * 500,
+                    finishLoadTime: Date.now() - Math.random() * 300,
+                    navigationType: 'Navigation'
                 };
             },
             csi: function() {
                 return {
-                    startE: Date.now() - Math.random() * 2000,
-                    onloadT: Date.now() - Math.random() * 1000,
-                    pageT: Date.now() - Math.random() * 1500,
-                    tran: 15
+                    startE: Date.now() - Math.random() * 1000,
+                    onloadT: Date.now() - Math.random() * 500,
+                    pageT: Date.now() - Math.random() * 800
                 };
-            },
-            app: {
-                isInstalled: false,
-                InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-                RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
             }
         };
         
-        // Plugins אמיתיים ומתקדמים
+        // Plugins
         Object.defineProperty(navigator, 'plugins', {
             get: function() {
                 return [
-                    { 0: { description: "Portable Document Format", suffixes: "pdf", type: "application/pdf" }, description: "Chrome PDF Plugin", filename: "internal-pdf-viewer", length: 1, name: "Chrome PDF Plugin" },
-                    { 0: { description: "Portable Document Format", suffixes: "pdf", type: "application/pdf" }, description: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", length: 1, name: "Chrome PDF Viewer" },
-                    { 0: { description: "Native Client Executable", suffixes: "nexe", type: "application/x-nacl" }, 1: { description: "Portable Native Client Executable", suffixes: "pexe", type: "application/x-pnacl" }, description: "Native Client", filename: "internal-nacl-plugin", length: 2, name: "Native Client" }
+                    { description: "Chrome PDF Plugin", filename: "internal-pdf-viewer", name: "Chrome PDF Plugin" },
+                    { description: "Native Client", filename: "internal-nacl-plugin", name: "Native Client" }
                 ];
             }
         });
-        
-        // Languages & Locale
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
-        
-        // Hardware מציאותי
-        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-        Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
-        
-        // Screen properties מציאותיים
-        Object.defineProperty(screen, 'availHeight', { get: () => 1040 });
-        Object.defineProperty(screen, 'availWidth', { get: () => 1920 });
-        Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
-        Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
-        
-        // Permissions API
-        if (navigator.permissions && navigator.permissions.query) {
-            const originalQuery = navigator.permissions.query;
-            navigator.permissions.query = function(parameters) {
-                const responses = {
-                    'notifications': { state: 'default' },
-                    'geolocation': { state: 'prompt' },
-                    'camera': { state: 'prompt' },
-                    'microphone': { state: 'prompt' }
-                };
-                return Promise.resolve(responses[parameters.name] || { state: 'prompt' });
-            };
-        }
-        
-        // מחיקת כל automation flags
-        const automationFlags = [
-            '_phantom', '__nightmare', '_selenium', 'callPhantom', 'callSelenium',
-            '__webdriver_evaluate', '__selenium_evaluate', '__webdriver_script_function',
-            '__webdriver_script_func', '__webdriver_script_fn', '__fxdriver_evaluate',
-            '__driver_unwrapped', '__webdriver_unwrapped', '__driver_evaluate',
-            '__selenium_unwrapped', '__fxdriver_unwrapped', '__webdriver_script_function',
-            'webdriver', '__webdriver_script_func', '__selenium_evaluate',
-            '__selenium_unwrapped', '__fxdriver_unwrapped'
-        ];
-        
-        automationFlags.forEach(flag => {
-            delete window[flag];
-            delete document[flag];
-        });
-        
-        // Override native functions
-        if (window.HTMLElement) {
-            const originalToString = Function.prototype.toString;
-            Function.prototype.toString = function() {
-                if (this === HTMLElement.prototype.click) {
-                    return 'function click() { [native code] }';
-                }
-                return originalToString.apply(this, arguments);
-            };
-        }
-        
-        // Canvas fingerprinting protection
-        const originalGetContext = HTMLCanvasElement.prototype.getContext;
-        HTMLCanvasElement.prototype.getContext = function(type) {
-            const context = originalGetContext.apply(this, arguments);
-            if (type === '2d') {
-                // הוסף רעש קל לcanvas כדי למנוע fingerprinting
-                const originalFillText = context.fillText;
-                context.fillText = function() {
-                    const args = Array.from(arguments);
-                    if (args[1]) args[1] += Math.random() * 0.01;
-                    if (args[2]) args[2] += Math.random() * 0.01;
-                    return originalFillText.apply(this, args);
-                };
-            }
-            return context;
-        };
-        
-        // Mouse movement simulation
-        let mouseData = { x: 0, y: 0, movements: 0 };
-        
-        document.addEventListener('DOMContentLoaded', () => {
-            // סימולציה אוטומטית של תנועת עכבר
-            const simulateMouseMovement = () => {
-                mouseData.x += (Math.random() - 0.5) * 5;
-                mouseData.y += (Math.random() - 0.5) * 5;
-                mouseData.movements++;
-                
-                const event = new MouseEvent('mousemove', {
-                    clientX: Math.max(0, Math.min(window.innerWidth, mouseData.x)),
-                    clientY: Math.max(0, Math.min(window.innerHeight, mouseData.y)),
-                    bubbles: true
-                });
-                document.dispatchEvent(event);
-            };
-            
-            // תנועות אקראיות
-            const interval = setInterval(simulateMouseMovement, 50 + Math.random() * 100);
-            
-            // הפסקה אחרי דקה
-            setTimeout(() => clearInterval(interval), 60000);
-        });
     });
     
-    // ✅ Headers מתקדמים
+    // Headers
     await page.setExtraHTTPHeaders({
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br',
         'DNT': '1',
@@ -369,321 +241,205 @@ async function setupUltimatePage(page) {
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-User': '?1',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
+        'Cache-Control': 'no-cache'
     });
     
-    console.log('✅ ULTIMATE page stealth setup complete!');
+    console.log(`✅ ${isHeadless ? 'Headless' : 'HEADFUL'} page setup complete!`);
     return page;
 }
 
-// ✅ Human behavior simulation מתקדם
-async function simulateAdvancedHumanBehavior(page) {
-    console.log('🤖 Simulating ADVANCED human behavior...');
-    
-    try {
-        // תנועות עכבר מורכבות
-        const paths = [
-            { x: 100, y: 100 }, { x: 300, y: 200 }, { x: 500, y: 150 },
-            { x: 700, y: 300 }, { x: 400, y: 400 }, { x: 800, y: 250 }
-        ];
-        
-        for (let i = 0; i < paths.length; i++) {
-            const path = paths[i];
-            await page.mouse.move(path.x, path.y, { steps: Math.floor(Math.random() * 10) + 5 });
-            await page.waitForTimeout(100 + Math.random() * 200);
-        }
-        
-        // גלילה מורכבת
-        await page.evaluate(() => {
-            const scrollSteps = [0, 100, 50, 200, 150, 80];
-            scrollSteps.forEach((step, i) => {
-                setTimeout(() => {
-                    window.scrollTo(0, step);
-                }, i * 300);
-            });
-        });
-        
-        await page.waitForTimeout(1000);
-        
-        // לחיצות בנקודות שונות
-        const clickPoints = [
-            { x: 683, y: 384 }, { x: 500, y: 300 }, 
-            { x: 800, y: 450 }, { x: 300, y: 200 }
-        ];
-        
-        for (const point of clickPoints) {
-            try {
-                await page.mouse.click(point.x, point.y);
-                await page.waitForTimeout(300 + Math.random() * 200);
-            } catch (e) {}
-        }
-        
-        // מקשי מקלדת
-        await page.keyboard.press('Tab');
-        await page.waitForTimeout(200);
-        await page.keyboard.press('Enter');
-        await page.waitForTimeout(500);
-        
-    } catch (error) {
-        console.log(`⚠️ Human behavior simulation error: ${error.message}`);
-    }
-}
-
-// ✅ ULTIMATE Cloudflare bypass - גרסה ULTRA-PATIENT
-async function ultimateCloudflareBypass(page, url, maxWaitTime = 60000, fullScraping = false) {
-    console.log('💀 ULTIMATE Cloudflare bypass initiated - ULTRA-PATIENT mode...');
+// ✅ Patient Cloudflare bypass - כמו Byparr
+async function byparrStyleBypass(page, url, maxWaitTime = 180000, fullScraping = false) {
+    console.log('🎯 Byparr-style bypass initiated...');
     
     const startTime = Date.now();
     let attempt = 0;
-    
-    // ✅ אסטרטגיה חדשה - פחות attempts, יותר זמן המתנה
-    const baseWaitTime = fullScraping ? 8000 : 5000; // התחלה עם 5-8 שניות
-    const maxPatientTime = Math.min(maxWaitTime * 0.9, 180000); // עד 3 דקות max
+    const maxPatientTime = maxWaitTime * 0.9;
     
     while ((Date.now() - startTime) < maxPatientTime) {
         attempt++;
         const elapsed = Math.round((Date.now() - startTime) / 1000);
         
-        console.log(`🚀 ULTRA-PATIENT attempt ${attempt} - ${elapsed}s (max: ${Math.round(maxPatientTime/1000)}s)`);
+        console.log(`🔄 Byparr attempt ${attempt} - ${elapsed}s (like local Byparr)`);
         
         try {
             const currentTitle = await page.title();
             const currentUrl = page.url();
             
-            console.log(`📍 Status: "${currentTitle.substring(0, 60)}..."`);
+            console.log(`📍 Title: "${currentTitle.substring(0, 60)}..."`);
             
-            // בדיקות Cloudflare מתקדמות
             const cloudflareIndicators = [
-                'Just a moment',
-                'Checking your browser',
-                'Verifying you are human',
-                'Please wait',
-                'Loading',
-                'DDoS protection',
-                'Security check',
-                'Cloudflare',
-                'Ray ID'
+                'just a moment', 'checking your browser', 'verifying you are human',
+                'please wait', 'ddos protection', 'cloudflare', 'ray id'
             ];
             
             const isCloudflareActive = cloudflareIndicators.some(indicator => 
-                currentTitle.toLowerCase().includes(indicator.toLowerCase())
+                currentTitle.toLowerCase().includes(indicator)
             );
             
-            // בדיקת URL - אם יש ssd parameter זה אומר שעברנו
             const hasSSdParam = currentUrl.includes('ssd=');
-            const urlChanged = currentUrl !== url; // URL השתנה מהמקורי
+            const urlChanged = currentUrl !== url;
             
-            if (isCloudflareActive && !hasSSdParam) {
-                console.log('☁️ Cloudflare still active - deploying ULTRA-PATIENT countermeasures...');
-                
-                // ✅ אם זה attempt ראשון או כל 3 attempts - עשה אינטראקציה
-                if (attempt === 1 || attempt % 3 === 0) {
-                    console.log('🤖 Deploying advanced human simulation...');
-                    await simulateAdvancedHumanBehavior(page);
-                    
-                    // ✅ חפש ואינטראקט עם iframes/turnstile
-                    try {
-                        const iframes = await page.$('iframe');
-                        console.log(`🔍 Found ${iframes.length} iframes`);
-                        
-                        if (iframes.length > 0) {
-                            for (let i = 0; i < Math.min(iframes.length, 2); i++) {
-                                try {
-                                    const frame = await iframes[i].contentFrame();
-                                    if (frame) {
-                                        console.log(`🎯 Interacting with iframe ${i + 1}...`);
-                                        
-                                        // נסה לקליק בתוך iframe
-                                        await frame.click('body').catch(() => {});
-                                        await page.waitForTimeout(1000);
-                                        
-                                        // חפש checkbox/button
-                                        const interactiveElements = await frame.$('input[type="checkbox"], button, .challenge-form, [data-sitekey]').catch(() => []);
-                                        if (interactiveElements.length > 0) {
-                                            console.log(`✅ Found interactive element in iframe ${i + 1}`);
-                                            await interactiveElements[0].click();
-                                            await page.waitForTimeout(2000);
-                                        }
-                                    }
-                                } catch (iframeError) {
-                                    console.log(`⚠️ Iframe ${i + 1} error: ${iframeError.message}`);
-                                }
-                            }
-                        }
-                    } catch (iframeError) {
-                        console.log(`⚠️ General iframe error: ${iframeError.message}`);
-                    }
-                    
-                    // ✅ חפש כפתורים בדף הראשי
-                    const mainPageButtons = await page.$('button, input[type="button"], input[type="submit"], .btn, [role="button"], .challenge-form button').catch(() => []);
-                    if (mainPageButtons.length > 0) {
-                        console.log(`🔘 Found ${mainPageButtons.length} buttons on main page`);
-                        try {
-                            await mainPageButtons[0].click();
-                            await page.waitForTimeout(1500);
-                        } catch (clickError) {
-                            console.log(`⚠️ Button click error: ${clickError.message}`);
-                        }
-                    }
-                }
-                
-                // ✅ ULTRA-PATIENT WAIT - זה הקסם!
-                // המתנה מתקדמת - מתחיל קצר והולך ארוך יותר
-                const waitMultiplier = Math.min(attempt, 6); // עד פי 6
-                const currentWait = baseWaitTime * waitMultiplier;
-                
-                console.log(`⏳ ULTRA-PATIENT wait: ${Math.round(currentWait/1000)}s (attempt ${attempt}, multiplier: ${waitMultiplier})`);
-                
-                // חלק את הזמן לחלקים קטנים כדי לעשות בדיקות ביניים
-                const chunks = Math.ceil(currentWait / 2000); // כל 2 שניות בדיקה
-                const chunkWait = Math.floor(currentWait / chunks);
-                
-                for (let chunk = 0; chunk < chunks; chunk++) {
-                    await page.waitForTimeout(chunkWait);
-                    
-                    // בדיקת ביניים - אולי זה השתנה
-                    const intermediateTitle = await page.title().catch(() => currentTitle);
-                    const intermediateUrl = page.url();
-                    
-                    if (!cloudflareIndicators.some(ind => intermediateTitle.toLowerCase().includes(ind.toLowerCase())) ||
-                        intermediateUrl.includes('ssd=')) {
-                        console.log(`🎯 Status changed during wait! Breaking early...`);
-                        break;
-                    }
-                    
-                    if (chunk % 3 === 0) { // כל 6 שניות
-                        console.log(`⏳ Still waiting... (${Math.round((chunk * chunkWait)/1000)}s/${Math.round(currentWait/1000)}s)`);
-                    }
-                }
-                
-            } else {
-                // לא Cloudflare או יש ssd parameter - בדוק תוכן
-                console.log(`✅ Cloudflare indicators cleared or URL changed! Checking content...`);
-                
+            if (!isCloudflareActive || hasSSdParam || urlChanged) {
+                // Check for real content
                 const hasContent = await page.evaluate(() => {
                     const bodyText = document.body ? document.body.innerText : '';
                     const hasRealContent = bodyText.length > 800;
                     const noCloudflareText = !bodyText.toLowerCase().includes('just a moment') && 
-                                           !bodyText.toLowerCase().includes('checking your browser') &&
-                                           !bodyText.toLowerCase().includes('verifying you are human');
-                    
-                    console.log(`Content check: ${bodyText.length} chars, no CF text: ${noCloudflareText}`);
+                                           !bodyText.toLowerCase().includes('checking your browser');
                     return hasRealContent && noCloudflareText;
                 }).catch(() => false);
                 
-                if (hasContent || hasSSdParam || urlChanged) {
-                    console.log(`💀 ULTRA-PATIENT SUCCESS after ${elapsed}s!`);
-                    console.log(`🎯 Success indicators: content=${hasContent}, ssd=${hasSSdParam}, url_changed=${urlChanged}`);
+                if (hasContent || hasSSdParam) {
+                    console.log(`🎯 Byparr-style SUCCESS after ${elapsed}s!`);
+                    console.log(`✅ Success indicators: content=${hasContent}, ssd=${hasSSdParam}, changed=${urlChanged}`);
                     
+                    // Final wait for full scraping
                     if (fullScraping) {
-                        console.log('⏳ Final stabilization for full scraping...');
-                        await page.waitForTimeout(5000); // המתנה ארוכה יותר למצב מלא
+                        console.log('⏳ Final content stabilization (full mode)...');
+                        await page.waitForTimeout(8000);
                     } else {
-                        await page.waitForTimeout(2000); // המתנה קצרה למצב רגיל
+                        await page.waitForTimeout(3000);
                     }
                     
                     return true;
+                }
+            }
+            
+            if (isCloudflareActive) {
+                console.log('☁️ Cloudflare still active - being patient like Byparr...');
+                
+                // ✅ Byparr-style human behavior (less aggressive)
+                if (attempt <= 3) {
+                    try {
+                        // Gentle mouse movement
+                        await page.mouse.move(500 + Math.random() * 300, 300 + Math.random() * 200);
+                        await page.waitForTimeout(500);
+                        
+                        // Look for iframes
+                        const iframes = await page.$$('iframe');
+                        if (iframes.length > 0) {
+                            console.log(`🔍 Found ${iframes.length} iframes, checking for Turnstile...`);
+                            try {
+                                const frame = await iframes[0].contentFrame();
+                                if (frame) {
+                                    await frame.click('body').catch(() => {});
+                                    await page.waitForTimeout(1000);
+                                }
+                            } catch (e) {}
+                        }
+                        
+                        // Gentle click on page
+                        await page.mouse.click(683, 384);
+                        await page.waitForTimeout(1000);
+                        
+                    } catch (interactionError) {
+                        console.log(`⚠️ Interaction error: ${interactionError.message}`);
+                    }
+                }
+                
+                // ✅ Byparr-style patient wait - starting with shorter waits
+                let waitTime;
+                if (attempt <= 2) {
+                    waitTime = 8000; // 8 seconds first attempts
+                } else if (attempt <= 5) {
+                    waitTime = 15000; // 15 seconds middle attempts  
                 } else {
-                    console.log('⚠️ Page indicators cleared but content insufficient, continuing...');
+                    waitTime = 25000; // 25 seconds later attempts
+                }
+                
+                console.log(`⏳ Byparr-style patient wait: ${Math.round(waitTime/1000)}s (attempt ${attempt})`);
+                
+                // Wait with intermediate checks
+                const chunks = Math.ceil(waitTime / 3000);
+                const chunkWait = Math.floor(waitTime / chunks);
+                
+                for (let chunk = 0; chunk < chunks; chunk++) {
+                    await page.waitForTimeout(chunkWait);
+                    
+                    // Intermediate check
+                    const intermediateTitle = await page.title().catch(() => currentTitle);
+                    const intermediateUrl = page.url();
+                    
+                    if (!cloudflareIndicators.some(ind => intermediateTitle.toLowerCase().includes(ind)) ||
+                        intermediateUrl.includes('ssd=')) {
+                        console.log(`🚀 Status changed during wait! Breaking early...`);
+                        break;
+                    }
+                    
+                    if (chunk % 2 === 0) {
+                        console.log(`⏳ Byparr waiting... (${Math.round((chunk * chunkWait)/1000)}s/${Math.round(waitTime/1000)}s)`);
+                    }
                 }
             }
             
         } catch (error) {
-            console.log(`⚠️ Bypass attempt error: ${error.message}`);
+            console.log(`⚠️ Attempt error: ${error.message}`);
         }
         
-        // בדיקה אם עברנו את הזמן המקסימלי
         if (Date.now() - startTime >= maxPatientTime) {
             break;
         }
     }
     
     const finalElapsed = Math.round((Date.now() - startTime) / 1000);
-    console.log(`⏰ ULTRA-PATIENT bypass completed after ${finalElapsed}s (${attempt} attempts)`);
+    console.log(`⏰ Byparr-style bypass completed after ${finalElapsed}s (${attempt} attempts)`);
     
-    // בדיקה אחרונה
+    // Final check
     const finalUrl = page.url();
     const hasSSdParam = finalUrl.includes('ssd=');
     
-    if (hasSSdParam) {
-        console.log(`✅ FINAL SUCCESS: Found ssd parameter in URL!`);
-        return true;
-    }
-    
-    console.log(`⚠️ No clear success indicators, but proceeding...`);
-    return false;
+    console.log(`🔍 Final status: ssd=${hasSSdParam}, url_length=${finalUrl.length}`);
+    return hasSSdParam;
 }
 
-// Main scraping function עם המתנה מוגברת
-async function scrapeWithUltimateBypass(url, fullScraping = false, maxWaitTime = 120000) { // הגדלתי ל-120 שניות default
+// Main scraping function
+async function scrapeWithByparrStyle(url, fullScraping = false, maxWaitTime = 180000) {
     const startTime = Date.now();
     let browserObj = null;
     let page = null;
     
     try {
-        console.log(`💀 Starting ULTIMATE ${fullScraping ? 'FULL SCRAPING' : 'URL EXTRACTION'}`);
+        console.log(`🎯 Starting Byparr-style ${fullScraping ? 'FULL SCRAPING' : 'URL EXTRACTION'}`);
         console.log(`🔗 Target: ${url.substring(0, 100)}...`);
-        console.log(`⏰ Max wait time: ${Math.round(maxWaitTime/1000)}s`);
+        console.log(`⏰ Max time: ${Math.round(maxWaitTime/1000)}s (like local Byparr)`);
         
         browserObj = await getBrowser();
         page = await browserObj.browser.newPage();
         
-        // Setup ultimate page
-        await setupUltimatePage(page);
+        await setupHeadfulPage(page, browserObj.isHeadless);
         
-        console.log('🚀 Navigating to target...');
+        console.log('🚀 Navigating like Byparr...');
         
-        // Initial navigation with longer timeout
+        // Navigate with patience
         await page.goto(url, {
             waitUntil: ['domcontentloaded'],
-            timeout: 45000 // הגדלתי מ-30 ל-45 שניות
+            timeout: 60000
         });
         
-        // ✅ המתנה ראשונית - לתת לדף להתייצב
-        console.log('⏳ Initial page stabilization...');
-        await page.waitForTimeout(3000); // המתנה של 3 שניות בהתחלה
+        // Initial stabilization
+        console.log('⏳ Initial stabilization (like Byparr)...');
+        await page.waitForTimeout(5000);
         
-        // Check and bypass Cloudflare עם זמן מוגבר
-        const bypassSuccess = await ultimateCloudflareBypass(page, url, maxWaitTime - 10000, fullScraping);
+        // Byparr-style bypass
+        const bypassSuccess = await byparrStyleBypass(page, url, maxWaitTime - 15000, fullScraping);
         
-        if (!bypassSuccess) {
-            console.log('⚠️ ULTIMATE bypass inconclusive, proceeding anyway...');
-        }
-        
-        // Final stabilization - יותר זמן למצב מלא
-        const finalWait = fullScraping ? 5000 : 2000;
-        console.log(`⏳ Final stabilization: ${finalWait/1000}s...`);
-        await page.waitForTimeout(finalWait);
-        
-        // Collect results
+        // Final results
         const finalUrl = page.url();
         const html = await page.content();
         const cookies = await page.cookies();
         const elapsed = Date.now() - startTime;
         
-        // Store cookies for session management
-        if (cookies.length > 0) {
-            const domain = new URL(finalUrl).hostname;
-            globalCookieJar.set(domain, { cookies, timestamp: Date.now() });
-            console.log(`🍪 Stored ${cookies.length} cookies for ${domain}`);
-        }
-        
-        console.log(`💀 ULTIMATE scraping completed in ${elapsed}ms`);
+        console.log(`🎯 Byparr-style completed in ${elapsed}ms`);
         console.log(`🔗 Final URL: ${finalUrl.substring(0, 100)}...`);
         console.log(`📄 Content: ${html.length} bytes`);
-        console.log(`🎯 Has ssd param: ${finalUrl.includes('ssd=') ? 'YES ✅' : 'NO ❌'}`);
+        console.log(`✅ Has ssd param: ${finalUrl.includes('ssd=') ? 'YES ✅' : 'NO ❌'}`);
         
-        // ✅ תוספת: בדיקה אם יש תוכן של חלקים (לfull scraping)
         if (fullScraping) {
             const hasPartsContent = html.includes('part-search') || 
                                   html.includes('data-codeonimage') || 
-                                  html.includes('oem') ||
-                                  html.includes('.gif');
-            console.log(`🔧 Parts content detected: ${hasPartsContent ? 'YES ✅' : 'NO ❌'}`);
+                                  html.includes('oem');
+            console.log(`🔧 Parts content: ${hasPartsContent ? 'YES ✅' : 'NO ❌'}`);
         }
         
         return {
@@ -693,12 +449,13 @@ async function scrapeWithUltimateBypass(url, fullScraping = false, maxWaitTime =
             cookies: cookies,
             hasSSd: finalUrl.includes('ssd='),
             elapsed: elapsed,
-            scrapingType: fullScraping ? 'ultimate_full' : 'ultimate_url',
-            bypassSuccess: bypassSuccess
+            scrapingType: fullScraping ? 'byparr_full' : 'byparr_url',
+            bypassSuccess: bypassSuccess,
+            browserMode: browserObj.isHeadless ? 'headless' : 'headful'
         };
         
     } catch (error) {
-        console.error('💀 ULTIMATE scraping error:', error.message);
+        console.error('🎯 Byparr-style scraping error:', error.message);
         return {
             success: false,
             error: error.message,
@@ -715,37 +472,6 @@ async function scrapeWithUltimateBypass(url, fullScraping = false, maxWaitTime =
     }
 }
 
-// Memory cleanup
-async function ultimateMemoryCleanup() {
-    console.log('\n' + '💀'.repeat(20));
-    console.log('🧹 ULTIMATE memory warfare...');
-    
-    const memBefore = process.memoryUsage();
-    console.log(`📊 Memory before: ${Math.round(memBefore.heapUsed / 1024 / 1024)}MB`);
-    
-    // Force garbage collection
-    if (global.gc) {
-        global.gc();
-    }
-    
-    // Clear old cookies
-    const now = Date.now();
-    for (const [domain, cookies] of globalCookieJar.entries()) {
-        if (now - cookies.timestamp > 30 * 60 * 1000) { // 30 minutes
-            globalCookieJar.delete(domain);
-            console.log(`🗑️ Cleared old cookies for ${domain}`);
-        }
-    }
-    
-    const memAfter = process.memoryUsage();
-    console.log(`📊 Memory after: ${Math.round(memAfter.heapUsed / 1024 / 1024)}MB`);
-    console.log(`💾 Freed: ${Math.round((memBefore.heapUsed - memAfter.heapUsed) / 1024 / 1024)}MB`);
-    console.log(`🌐 Active browsers: ${browserPool.length}`);
-    console.log(`⚡ Busy browsers: ${browserPool.filter(b => b.busy).length}`);
-    console.log(`🍪 Cookie domains: ${globalCookieJar.size}`);
-    console.log('💀'.repeat(20) + '\n');
-}
-
 // Main endpoint
 app.post('/v1', async (req, res) => {
     const startTime = Date.now();
@@ -754,7 +480,7 @@ app.post('/v1', async (req, res) => {
         const { 
             cmd, 
             url, 
-            maxTimeout = 120000, // הגדלתי ל-120 שניות default
+            maxTimeout = 180000, // 3 minutes default like Byparr
             session,
             fullScraping = false
         } = req.body;
@@ -766,35 +492,35 @@ app.post('/v1', async (req, res) => {
             });
         }
         
-        console.log(`\n${'💀'.repeat(30)}`);
-        console.log(`💀 ULTIMATE Request at ${new Date().toISOString()}`);
+        console.log(`\n${'🎯'.repeat(25)}`);
+        console.log(`🎯 Byparr-style Request at ${new Date().toISOString()}`);
         console.log(`🔗 URL: ${url.substring(0, 100)}...`);
         console.log(`⏱️ Timeout: ${maxTimeout}ms`);
-        console.log(`🎯 Mode: ${fullScraping ? 'ULTIMATE FULL WARFARE' : 'ULTIMATE URL EXTRACTION'}`);
-        console.log(`${'💀'.repeat(30)}\n`);
+        console.log(`🎯 Mode: ${fullScraping ? 'BYPARR FULL SCRAPING' : 'BYPARR URL EXTRACTION'}`);
+        console.log(`${'🎯'.repeat(25)}\n`);
         
         const result = await Promise.race([
-            scrapeWithUltimateBypass(url, fullScraping, maxTimeout),
+            scrapeWithByparrStyle(url, fullScraping, maxTimeout),
             new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('ULTIMATE Timeout')), maxTimeout + 15000)
+                setTimeout(() => reject(new Error('Byparr-style Timeout')), maxTimeout + 20000)
             )
         ]);
         
         if (result.success) {
             const elapsed = Date.now() - startTime;
             
-            console.log(`\n${'💀'.repeat(30)}`);
-            console.log(`💀 ULTIMATE SUCCESS - Total time: ${elapsed}ms`);
+            console.log(`\n${'🎯'.repeat(25)}`);
+            console.log(`🎯 BYPARR-STYLE SUCCESS - Total time: ${elapsed}ms`);
             console.log(`🔗 Final URL: ${result.url?.substring(0, 120) || 'N/A'}...`);
             console.log(`📄 HTML Length: ${result.html?.length || 0} bytes`);
-            console.log(`🎯 Has ssd param: ${result.hasSSd ? 'YES ✅' : 'NO ❌'}`);
+            console.log(`✅ Has ssd param: ${result.hasSSd ? 'YES ✅' : 'NO ❌'}`);
+            console.log(`🖥️ Browser mode: ${result.browserMode}`);
             console.log(`🚀 Scraping type: ${result.scrapingType}`);
-            console.log(`☁️ Bypass success: ${result.bypassSuccess ? 'YES ✅' : 'UNKNOWN'}`);
-            console.log(`${'💀'.repeat(30)}\n`);
+            console.log(`${'🎯'.repeat(25)}\n`);
             
             res.json({
                 status: 'ok',
-                message: 'ULTIMATE Success',
+                message: 'Byparr-style Success',
                 solution: {
                     url: result.url || url,
                     status: 200,
@@ -804,19 +530,20 @@ app.post('/v1', async (req, res) => {
                 },
                 startTimestamp: startTime,
                 endTimestamp: Date.now(),
-                version: '5.0.0-ULTIMATE-CLOUDFLARE-DESTROYER',
+                version: '6.0.0-BYPARR-STYLE-HEADFUL',
                 hasSSd: result.hasSSd || false,
                 scrapingType: result.scrapingType,
+                browserMode: result.browserMode,
                 bypassSuccess: result.bypassSuccess
             });
         } else {
-            throw new Error(result.error || 'ULTIMATE error');
+            throw new Error(result.error || 'Byparr-style error');
         }
         
     } catch (error) {
-        console.error(`\n${'💀'.repeat(30)}`);
-        console.error('💀 ULTIMATE REQUEST FAILED:', error.message);
-        console.error(`${'💀'.repeat(30)}\n`);
+        console.error(`\n${'🎯'.repeat(25)}`);
+        console.error('🎯 BYPARR-STYLE REQUEST FAILED:', error.message);
+        console.error(`${'🎯'.repeat(25)}\n`);
         
         res.status(500).json({
             status: 'error',
@@ -831,23 +558,21 @@ app.get('/health', async (req, res) => {
     const memory = process.memoryUsage();
     
     res.json({
-        status: 'ultimate-warfare-ready',
+        status: 'byparr-style-ready',
         uptime: Math.round(process.uptime()) + 's',
         browsers: browserPool.length,
         activeBrowsers: browserPool.filter(b => b.busy).length,
+        browserMode: browserPool.length > 0 ? (browserPool[0].isHeadless ? 'headless' : 'headful') : 'unknown',
         memory: {
             used: Math.round(memory.heapUsed / 1024 / 1024) + 'MB',
             total: Math.round(memory.heapTotal / 1024 / 1024) + 'MB'
         },
-        cookieDomains: globalCookieJar.size,
         features: [
-            '💀 ULTIMATE Cloudflare destruction',
-            '🤖 Advanced human behavior simulation',
-            '🔧 FlareSolver-style browser setup',
-            '🍪 Smart cookie management',
-            '⚡ Aggressive browser recycling',
-            '🎯 Turnstile interaction',
-            '🧠 Multi-technique bypass'
+            '🎯 Byparr-style behavior',
+            '🖥️ Headful mode (XVFB)',
+            '⏰ Patient waiting strategy',
+            '🔧 Gentle interactions',
+            '🎮 Real display simulation'
         ]
     });
 });
@@ -855,70 +580,96 @@ app.get('/health', async (req, res) => {
 // Root
 app.get('/', (req, res) => {
     const memory = process.memoryUsage();
+    const browserMode = browserPool.length > 0 ? (browserPool[0].isHeadless ? 'Headless' : 'HEADFUL') : 'Unknown';
+    
     res.send(`
-        <h1>💀 ULTIMATE Puppeteer Destroyer v5.0</h1>
-        <p><strong>Status:</strong> Locked and loaded for Cloudflare destruction</p>
-        <p><strong>Memory:</strong> ${Math.round(memory.heapUsed / 1024 / 1024)}MB used</p>
-        <p><strong>Browsers:</strong> ${browserPool.length} ultimate weapons</p>
-        <p><strong>Cookie Domains:</strong> ${globalCookieJar.size} captured</p>
+        <h1>🎯 Byparr-Style Puppeteer v6.0</h1>
+        <p><strong>Status:</strong> Mimicking local Byparr behavior</p>
+        <p><strong>Browser Mode:</strong> ${browserMode}</p>
+        <p><strong>Memory:</strong> ${Math.round(memory.heapUsed / 1024 / 1024)}MB</p>
         
-        <h3>💀 ULTIMATE Arsenal:</h3>
+        <h3>🎯 Byparr Features:</h3>
         <ul>
-            <li>✅ FlareSolver-style browser configuration</li>
-            <li>✅ Undetected ChromeDriver techniques</li>
-            <li>✅ SeleniumBase-inspired stealth mode</li>
-            <li>✅ Advanced Turnstile interaction</li>
-            <li>✅ Human behavior simulation</li>
-            <li>✅ Canvas fingerprint protection</li>
-            <li>✅ Smart session management</li>
-            <li>✅ Aggressive anti-detection</li>
+            <li>✅ HEADFUL mode with XVFB virtual display</li>
+            <li>✅ Patient waiting strategy (8-25s per attempt)</li>
+            <li>✅ Gentle human interactions</li>
+            <li>✅ Real display properties</li>
+            <li>✅ Cloudflare challenge detection</li>
+            <li>✅ 3-minute default timeout</li>
         </ul>
         
-        <h3>⚔️ Battle Modes:</h3>
-        <p><strong>Quick Strike:</strong> <code>{"fullScraping": false}</code> - Fast URL extraction</p>
-        <p><strong>Total War:</strong> <code>{"fullScraping": true, "maxTimeout": 120000}</code> - Full site destruction</p>
+        <h3>🚀 Like Local Byparr:</h3>
+        <p>This tries to replicate the exact behavior of local Byparr that works</p>
+        <p><strong>Success Rate:</strong> Should match local Byparr performance</p>
         
-        <p><strong>⚠️ WARNING:</strong> This weapon is designed for maximum Cloudflare annihilation!</p>
+        <h3>📖 Usage:</h3>
+        <p><code>{"fullScraping": false, "maxTimeout": 180000}</code></p>
     `);
 });
+
+// Install XVFB if not available
+async function ensureXVFB() {
+    const { spawn } = require('child_process');
+    
+    try {
+        // Check if XVFB is available
+        spawn('which', ['Xvfb']).on('close', (code) => {
+            if (code !== 0) {
+                console.log('📦 Installing XVFB...');
+                const install = spawn('apt-get', ['update', '&&', 'apt-get', 'install', '-y', 'xvfb'], {
+                    stdio: 'inherit',
+                    shell: true
+                });
+                
+                install.on('close', (installCode) => {
+                    if (installCode === 0) {
+                        console.log('✅ XVFB installed successfully');
+                    } else {
+                        console.log('❌ Failed to install XVFB');
+                    }
+                });
+            }
+        });
+    } catch (error) {
+        console.log('⚠️ XVFB check failed:', error.message);
+    }
+}
 
 // Start server
 app.listen(PORT, '0.0.0.0', async () => {
     console.log(`
 ╔═══════════════════════════════════════════════╗
-║        💀 ULTIMATE PUPPETEER v5.0 💀         ║
-║     CLOUDFLARE DESTRUCTION SYSTEM ONLINE     ║
+║         🎯 Byparr-Style Puppeteer v6.0       ║
+║     HEADFUL MODE - Like Local Byparr         ║
 ║              Port: ${PORT}                       ║
-║      Based on FlareSolver + Byparr tech      ║
-║         ALL STEALTH SYSTEMS ACTIVE           ║
+║         Patient Strategy: 8-25s waits        ║
+║            XVFB Virtual Display               ║
 ╚═══════════════════════════════════════════════╝
     `);
     
-    console.log('💀 Loading ultimate weapon systems...');
+    console.log('🖥️ Ensuring XVFB is available...');
+    await ensureXVFB();
+    
+    console.log('🎯 Initializing Byparr-style browser...');
     await initBrowserPool();
     
-    setInterval(ultimateMemoryCleanup, 60000);
-    console.log('⚔️ ULTIMATE CLOUDFLARE DESTROYER IS ONLINE!');
-    console.log('💀 Ready to annihilate any protection system!');
+    console.log('🚀 BYPARR-STYLE READY - Mimicking local success!');
 });
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
-    console.log('💀 ULTIMATE shutdown sequence initiated...');
+    console.log('🎯 Byparr-style shutdown...');
     for (const browserObj of browserPool) {
         await browserObj.browser.close().catch(() => {});
     }
     browserPool = [];
-    browserStats.clear();
-    globalCookieJar.clear();
     process.exit(0);
 });
 
 process.on('uncaughtException', (error) => {
-    console.error('💀 ULTIMATE Exception:', error.message);
-    if (global.gc) global.gc();
+    console.error('🎯 Byparr Exception:', error.message);
 });
 
 process.on('unhandledRejection', (error) => {
-    console.error('💀 ULTIMATE Rejection:', error.message);
+    console.error('🎯 Byparr Rejection:', error.message);
 });
