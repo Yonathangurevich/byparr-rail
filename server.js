@@ -433,27 +433,30 @@ async function simulateAdvancedHumanBehavior(page) {
     }
 }
 
-// ✅ ULTIMATE Cloudflare bypass - משלב כל הטכניקות
+// ✅ ULTIMATE Cloudflare bypass - גרסה ULTRA-PATIENT
 async function ultimateCloudflareBypass(page, url, maxWaitTime = 60000, fullScraping = false) {
-    console.log('💀 ULTIMATE Cloudflare bypass initiated...');
+    console.log('💀 ULTIMATE Cloudflare bypass initiated - ULTRA-PATIENT mode...');
     
     const startTime = Date.now();
     let attempt = 0;
-    const maxAttempts = Math.floor(maxWaitTime / 5000); // כל 5 שניות
     
-    while ((Date.now() - startTime) < maxWaitTime && attempt < maxAttempts) {
+    // ✅ אסטרטגיה חדשה - פחות attempts, יותר זמן המתנה
+    const baseWaitTime = fullScraping ? 8000 : 5000; // התחלה עם 5-8 שניות
+    const maxPatientTime = Math.min(maxWaitTime * 0.9, 180000); // עד 3 דקות max
+    
+    while ((Date.now() - startTime) < maxPatientTime) {
         attempt++;
         const elapsed = Math.round((Date.now() - startTime) / 1000);
         
-        console.log(`🚀 ULTIMATE bypass attempt ${attempt}/${maxAttempts} - ${elapsed}s`);
+        console.log(`🚀 ULTRA-PATIENT attempt ${attempt} - ${elapsed}s (max: ${Math.round(maxPatientTime/1000)}s)`);
         
         try {
             const currentTitle = await page.title();
             const currentUrl = page.url();
             
-            console.log(`📍 Status: "${currentTitle.substring(0, 50)}..."`);
+            console.log(`📍 Status: "${currentTitle.substring(0, 60)}..."`);
             
-            // בדיקות Cloudflare
+            // בדיקות Cloudflare מתקדמות
             const cloudflareIndicators = [
                 'Just a moment',
                 'Checking your browser',
@@ -461,100 +464,162 @@ async function ultimateCloudflareBypass(page, url, maxWaitTime = 60000, fullScra
                 'Please wait',
                 'Loading',
                 'DDoS protection',
-                'Security check'
+                'Security check',
+                'Cloudflare',
+                'Ray ID'
             ];
             
             const isCloudflareActive = cloudflareIndicators.some(indicator => 
-                currentTitle.includes(indicator)
+                currentTitle.toLowerCase().includes(indicator.toLowerCase())
             );
             
-            if (isCloudflareActive) {
-                console.log('☁️ Cloudflare active - deploying ULTIMATE countermeasures...');
+            // בדיקת URL - אם יש ssd parameter זה אומר שעברנו
+            const hasSSdParam = currentUrl.includes('ssd=');
+            const urlChanged = currentUrl !== url; // URL השתנה מהמקורי
+            
+            if (isCloudflareActive && !hasSSdParam) {
+                console.log('☁️ Cloudflare still active - deploying ULTRA-PATIENT countermeasures...');
                 
-                // ✅ Advanced human simulation
-                await simulateAdvancedHumanBehavior(page);
-                
-                // ✅ Look for and interact with Turnstile/CAPTCHA
-                try {
-                    const iframes = await page.$$('iframe');
-                    console.log(`🔍 Found ${iframes.length} iframes`);
+                // ✅ אם זה attempt ראשון או כל 3 attempts - עשה אינטראקציה
+                if (attempt === 1 || attempt % 3 === 0) {
+                    console.log('🤖 Deploying advanced human simulation...');
+                    await simulateAdvancedHumanBehavior(page);
                     
-                    for (const iframe of iframes) {
-                        try {
-                            const frame = await iframe.contentFrame();
-                            if (frame) {
-                                // נסה לחפש אלמנטים של Turnstile
-                                const turnstileElements = await frame.$$('input[type="checkbox"], .cf-turnstile, [data-sitekey]');
-                                if (turnstileElements.length > 0) {
-                                    console.log('🎯 Found Turnstile elements, attempting interaction...');
-                                    await turnstileElements[0].click();
-                                    await page.waitForTimeout(2000);
+                    // ✅ חפש ואינטראקט עם iframes/turnstile
+                    try {
+                        const iframes = await page.$('iframe');
+                        console.log(`🔍 Found ${iframes.length} iframes`);
+                        
+                        if (iframes.length > 0) {
+                            for (let i = 0; i < Math.min(iframes.length, 2); i++) {
+                                try {
+                                    const frame = await iframes[i].contentFrame();
+                                    if (frame) {
+                                        console.log(`🎯 Interacting with iframe ${i + 1}...`);
+                                        
+                                        // נסה לקליק בתוך iframe
+                                        await frame.click('body').catch(() => {});
+                                        await page.waitForTimeout(1000);
+                                        
+                                        // חפש checkbox/button
+                                        const interactiveElements = await frame.$('input[type="checkbox"], button, .challenge-form, [data-sitekey]').catch(() => []);
+                                        if (interactiveElements.length > 0) {
+                                            console.log(`✅ Found interactive element in iframe ${i + 1}`);
+                                            await interactiveElements[0].click();
+                                            await page.waitForTimeout(2000);
+                                        }
+                                    }
+                                } catch (iframeError) {
+                                    console.log(`⚠️ Iframe ${i + 1} error: ${iframeError.message}`);
                                 }
                             }
-                        } catch (e) {}
-                    }
-                } catch (iframeError) {
-                    console.log(`⚠️ Iframe interaction failed: ${iframeError.message}`);
-                }
-                
-                // ✅ Try clicking on page elements
-                const clickableSelectors = [
-                    'button', 'input[type="button"]', 'input[type="submit"]', 
-                    '.btn', '[role="button"]', 'a', '.click-me', '.challenge-form'
-                ];
-                
-                for (const selector of clickableSelectors) {
-                    try {
-                        const elements = await page.$$(selector);
-                        if (elements.length > 0) {
-                            console.log(`🔘 Clicking ${selector}...`);
-                            await elements[0].click();
-                            await page.waitForTimeout(1500);
-                            break; // רק לחיצה אחת בכל attempt
                         }
-                    } catch (e) {}
+                    } catch (iframeError) {
+                        console.log(`⚠️ General iframe error: ${iframeError.message}`);
+                    }
+                    
+                    // ✅ חפש כפתורים בדף הראשי
+                    const mainPageButtons = await page.$('button, input[type="button"], input[type="submit"], .btn, [role="button"], .challenge-form button').catch(() => []);
+                    if (mainPageButtons.length > 0) {
+                        console.log(`🔘 Found ${mainPageButtons.length} buttons on main page`);
+                        try {
+                            await mainPageButtons[0].click();
+                            await page.waitForTimeout(1500);
+                        } catch (clickError) {
+                            console.log(`⚠️ Button click error: ${clickError.message}`);
+                        }
+                    }
                 }
                 
-                // ✅ Progressive delay - חכה יותר זמן עם כל attempt
-                const waitTime = Math.min(5000 + (attempt * 1000), 10000);
-                console.log(`⏳ Waiting ${Math.round(waitTime/1000)}s before next check...`);
-                await page.waitForTimeout(waitTime);
+                // ✅ ULTRA-PATIENT WAIT - זה הקסם!
+                // המתנה מתקדמת - מתחיל קצר והולך ארוך יותר
+                const waitMultiplier = Math.min(attempt, 6); // עד פי 6
+                const currentWait = baseWaitTime * waitMultiplier;
+                
+                console.log(`⏳ ULTRA-PATIENT wait: ${Math.round(currentWait/1000)}s (attempt ${attempt}, multiplier: ${waitMultiplier})`);
+                
+                // חלק את הזמן לחלקים קטנים כדי לעשות בדיקות ביניים
+                const chunks = Math.ceil(currentWait / 2000); // כל 2 שניות בדיקה
+                const chunkWait = Math.floor(currentWait / chunks);
+                
+                for (let chunk = 0; chunk < chunks; chunk++) {
+                    await page.waitForTimeout(chunkWait);
+                    
+                    // בדיקת ביניים - אולי זה השתנה
+                    const intermediateTitle = await page.title().catch(() => currentTitle);
+                    const intermediateUrl = page.url();
+                    
+                    if (!cloudflareIndicators.some(ind => intermediateTitle.toLowerCase().includes(ind.toLowerCase())) ||
+                        intermediateUrl.includes('ssd=')) {
+                        console.log(`🎯 Status changed during wait! Breaking early...`);
+                        break;
+                    }
+                    
+                    if (chunk % 3 === 0) { // כל 6 שניות
+                        console.log(`⏳ Still waiting... (${Math.round((chunk * chunkWait)/1000)}s/${Math.round(currentWait/1000)}s)`);
+                    }
+                }
                 
             } else {
-                // לא Cloudflare - בדוק אם יש תוכן אמיתי
+                // לא Cloudflare או יש ssd parameter - בדוק תוכן
+                console.log(`✅ Cloudflare indicators cleared or URL changed! Checking content...`);
+                
                 const hasContent = await page.evaluate(() => {
                     const bodyText = document.body ? document.body.innerText : '';
-                    return bodyText.length > 1000 && 
-                           !bodyText.includes('Just a moment') && 
-                           !bodyText.includes('Checking your browser');
-                });
+                    const hasRealContent = bodyText.length > 800;
+                    const noCloudflareText = !bodyText.toLowerCase().includes('just a moment') && 
+                                           !bodyText.toLowerCase().includes('checking your browser') &&
+                                           !bodyText.toLowerCase().includes('verifying you are human');
+                    
+                    console.log(`Content check: ${bodyText.length} chars, no CF text: ${noCloudflareText}`);
+                    return hasRealContent && noCloudflareText;
+                }).catch(() => false);
                 
-                if (hasContent) {
-                    console.log(`💀 ULTIMATE bypass SUCCESS after ${elapsed}s!`);
+                if (hasContent || hasSSdParam || urlChanged) {
+                    console.log(`💀 ULTRA-PATIENT SUCCESS after ${elapsed}s!`);
+                    console.log(`🎯 Success indicators: content=${hasContent}, ssd=${hasSSdParam}, url_changed=${urlChanged}`);
                     
                     if (fullScraping) {
-                        console.log('⏳ Waiting for full content stabilization...');
-                        await page.waitForTimeout(3000);
+                        console.log('⏳ Final stabilization for full scraping...');
+                        await page.waitForTimeout(5000); // המתנה ארוכה יותר למצב מלא
+                    } else {
+                        await page.waitForTimeout(2000); // המתנה קצרה למצב רגיל
                     }
                     
                     return true;
                 } else {
-                    console.log('⚠️ Page loaded but content insufficient, continuing...');
+                    console.log('⚠️ Page indicators cleared but content insufficient, continuing...');
                 }
             }
             
         } catch (error) {
             console.log(`⚠️ Bypass attempt error: ${error.message}`);
         }
+        
+        // בדיקה אם עברנו את הזמן המקסימלי
+        if (Date.now() - startTime >= maxPatientTime) {
+            break;
+        }
     }
     
     const finalElapsed = Math.round((Date.now() - startTime) / 1000);
-    console.log(`⏰ ULTIMATE bypass completed after ${finalElapsed}s (${attempt} attempts)`);
+    console.log(`⏰ ULTRA-PATIENT bypass completed after ${finalElapsed}s (${attempt} attempts)`);
+    
+    // בדיקה אחרונה
+    const finalUrl = page.url();
+    const hasSSdParam = finalUrl.includes('ssd=');
+    
+    if (hasSSdParam) {
+        console.log(`✅ FINAL SUCCESS: Found ssd parameter in URL!`);
+        return true;
+    }
+    
+    console.log(`⚠️ No clear success indicators, but proceeding...`);
     return false;
 }
 
-// Main scraping function
-async function scrapeWithUltimateBypass(url, fullScraping = false, maxWaitTime = 90000) {
+// Main scraping function עם המתנה מוגברת
+async function scrapeWithUltimateBypass(url, fullScraping = false, maxWaitTime = 120000) { // הגדלתי ל-120 שניות default
     const startTime = Date.now();
     let browserObj = null;
     let page = null;
@@ -562,6 +627,7 @@ async function scrapeWithUltimateBypass(url, fullScraping = false, maxWaitTime =
     try {
         console.log(`💀 Starting ULTIMATE ${fullScraping ? 'FULL SCRAPING' : 'URL EXTRACTION'}`);
         console.log(`🔗 Target: ${url.substring(0, 100)}...`);
+        console.log(`⏰ Max wait time: ${Math.round(maxWaitTime/1000)}s`);
         
         browserObj = await getBrowser();
         page = await browserObj.browser.newPage();
@@ -571,21 +637,27 @@ async function scrapeWithUltimateBypass(url, fullScraping = false, maxWaitTime =
         
         console.log('🚀 Navigating to target...');
         
-        // Initial navigation
+        // Initial navigation with longer timeout
         await page.goto(url, {
             waitUntil: ['domcontentloaded'],
-            timeout: 30000
+            timeout: 45000 // הגדלתי מ-30 ל-45 שניות
         });
         
-        // Check and bypass Cloudflare
-        const bypassSuccess = await ultimateCloudflareBypass(page, url, maxWaitTime, fullScraping);
+        // ✅ המתנה ראשונית - לתת לדף להתייצב
+        console.log('⏳ Initial page stabilization...');
+        await page.waitForTimeout(3000); // המתנה של 3 שניות בהתחלה
+        
+        // Check and bypass Cloudflare עם זמן מוגבר
+        const bypassSuccess = await ultimateCloudflareBypass(page, url, maxWaitTime - 10000, fullScraping);
         
         if (!bypassSuccess) {
             console.log('⚠️ ULTIMATE bypass inconclusive, proceeding anyway...');
         }
         
-        // Final stabilization
-        await page.waitForTimeout(2000);
+        // Final stabilization - יותר זמן למצב מלא
+        const finalWait = fullScraping ? 5000 : 2000;
+        console.log(`⏳ Final stabilization: ${finalWait/1000}s...`);
+        await page.waitForTimeout(finalWait);
         
         // Collect results
         const finalUrl = page.url();
@@ -596,7 +668,7 @@ async function scrapeWithUltimateBypass(url, fullScraping = false, maxWaitTime =
         // Store cookies for session management
         if (cookies.length > 0) {
             const domain = new URL(finalUrl).hostname;
-            globalCookieJar.set(domain, cookies);
+            globalCookieJar.set(domain, { cookies, timestamp: Date.now() });
             console.log(`🍪 Stored ${cookies.length} cookies for ${domain}`);
         }
         
@@ -604,6 +676,15 @@ async function scrapeWithUltimateBypass(url, fullScraping = false, maxWaitTime =
         console.log(`🔗 Final URL: ${finalUrl.substring(0, 100)}...`);
         console.log(`📄 Content: ${html.length} bytes`);
         console.log(`🎯 Has ssd param: ${finalUrl.includes('ssd=') ? 'YES ✅' : 'NO ❌'}`);
+        
+        // ✅ תוספת: בדיקה אם יש תוכן של חלקים (לfull scraping)
+        if (fullScraping) {
+            const hasPartsContent = html.includes('part-search') || 
+                                  html.includes('data-codeonimage') || 
+                                  html.includes('oem') ||
+                                  html.includes('.gif');
+            console.log(`🔧 Parts content detected: ${hasPartsContent ? 'YES ✅' : 'NO ❌'}`);
+        }
         
         return {
             success: true,
@@ -673,7 +754,7 @@ app.post('/v1', async (req, res) => {
         const { 
             cmd, 
             url, 
-            maxTimeout = 90000, 
+            maxTimeout = 120000, // הגדלתי ל-120 שניות default
             session,
             fullScraping = false
         } = req.body;
