@@ -6,12 +6,12 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
 
-// Browser instance pool - הגבלה קבועה!
+// Browser instance pool - הגבלה קבועה
 let browserPool = [];
-const MAX_BROWSERS = 1; // ⚡ הורדנו ל-1 לחסוך זיכרון
-const MAX_REQUESTS_PER_BROWSER = 50; // נסגור browser אחרי 50 requests
+const MAX_BROWSERS = 1;
+const MAX_REQUESTS_PER_BROWSER = 50;
 
-// ✅ Browser launch options מיטובים לזיכרון
+// ✅ Browser launch options מיטובים לעבור Cloudflare מתקדם
 const BROWSER_ARGS = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -21,43 +21,32 @@ const BROWSER_ARGS = [
     '--disable-web-security',
     '--disable-gpu',
     '--no-first-run',
-    '--window-size=1366,768', // 🔥 הקטנו מ-1920x1080
-    // ❌ הסרנו --single-process שאוכל הרבה זיכרון!
+    '--window-size=1366,768',
     '--disable-accelerated-2d-canvas',
     '--disable-dev-profile',
-    '--memory-pressure-off', // ✅ תוספת לניהול זיכרון
-    '--max_old_space_size=512', // ✅ הגבלת זיכרון Node.js
+    '--memory-pressure-off',
+    '--max_old_space_size=512',
     '--disable-background-timer-throttling',
     '--disable-backgrounding-occluded-windows',
-    '--disable-renderer-backgrounding'
+    '--disable-renderer-backgrounding',
+    // ✅ תוספות לעבור Cloudflare מתקדם
+    '--disable-features=VizDisplayCompositor',
+    '--disable-extensions',
+    '--disable-plugins',
+    '--disable-images', // ✅ חסוך bandwidth וזיכרון
+    '--disable-javascript-harmony-shipping',
+    '--disable-ipc-flooding-protection'
 ];
 
-// מעקב requests per browser
 const browserStats = new Map();
 
-// Initialize browser pool
-async function initBrowserPool() {
-    console.log('🚀 Initializing optimized browser pool...');
-    for (let i = 0; i < MAX_BROWSERS; i++) {
-        try {
-            const browserObj = await createNewBrowser();
-            if (browserObj) {
-                browserPool.push(browserObj);
-                console.log(`✅ Browser ${i + 1} initialized with memory limits`);
-            }
-        } catch (error) {
-            console.error(`❌ Failed to init browser ${i + 1}:`, error.message);
-        }
-    }
-}
-
-// יצירת browser חדש עם מעקב
 async function createNewBrowser() {
     try {
         const browser = await puppeteer.launch({
             headless: 'new',
             args: BROWSER_ARGS,
-            ignoreDefaultArgs: ['--enable-automation']
+            ignoreDefaultArgs: ['--enable-automation'],
+            ignoreHTTPSErrors: true
         });
         
         const browserId = Date.now() + Math.random();
@@ -75,15 +64,27 @@ async function createNewBrowser() {
     }
 }
 
-// Get available browser from pool
+async function initBrowserPool() {
+    console.log('🚀 Initializing enhanced browser pool...');
+    for (let i = 0; i < MAX_BROWSERS; i++) {
+        try {
+            const browserObj = await createNewBrowser();
+            if (browserObj) {
+                browserPool.push(browserObj);
+                console.log(`✅ Browser ${i + 1} initialized with Cloudflare bypass`);
+            }
+        } catch (error) {
+            console.error(`❌ Failed to init browser ${i + 1}:`, error.message);
+        }
+    }
+}
+
 async function getBrowser() {
-    // נסה למצוא browser פנוי
     let browserObj = browserPool.find(b => !b.busy);
     
     if (!browserObj) {
         console.log('⏳ All browsers busy, waiting...');
-        // חכה עד שישתחרר browser (לא יוצר חדש!)
-        for (let i = 0; i < 100; i++) { // עד 10 שניות
+        for (let i = 0; i < 100; i++) {
             await new Promise(resolve => setTimeout(resolve, 100));
             browserObj = browserPool.find(b => !b.busy);
             if (browserObj) break;
@@ -94,7 +95,6 @@ async function getBrowser() {
         throw new Error('No browsers available - all busy');
     }
     
-    // בדוק אם Browser עשה יותר מדי requests
     if (browserObj.requests >= MAX_REQUESTS_PER_BROWSER) {
         console.log(`🔄 Browser ${browserObj.id} reached request limit, recreating...`);
         await recycleBrowser(browserObj);
@@ -106,17 +106,13 @@ async function getBrowser() {
     return browserObj;
 }
 
-// מחזור browser שעשה יותר מדי requests
 async function recycleBrowser(browserObj) {
     try {
-        // סגור browser ישן
         await browserObj.browser.close();
         browserStats.delete(browserObj.id);
         
-        // צור browser חדש
         const newBrowserObj = await createNewBrowser();
         if (newBrowserObj) {
-            // החלף במקום הישן
             const index = browserPool.indexOf(browserObj);
             browserPool[index] = newBrowserObj;
             console.log(`✅ Browser recycled successfully`);
@@ -126,7 +122,6 @@ async function recycleBrowser(browserObj) {
     }
 }
 
-// Release browser back to pool
 function releaseBrowser(browserObj) {
     if (browserObj) {
         browserObj.busy = false;
@@ -134,119 +129,184 @@ function releaseBrowser(browserObj) {
     }
 }
 
-// ✅ פונקציה לניקוי זיכרון כל דקה
-async function memoryCleanup() {
-    console.log('\n' + '='.repeat(50));
-    console.log('🧹 Running memory cleanup...');
-    
-    const memBefore = process.memoryUsage();
-    console.log(`📊 Memory before: ${Math.round(memBefore.heapUsed / 1024 / 1024)}MB`);
-    
-    // Force garbage collection
-    if (global.gc) {
-        global.gc();
-    }
-    
-    const memAfter = process.memoryUsage();
-    console.log(`📊 Memory after: ${Math.round(memAfter.heapUsed / 1024 / 1024)}MB`);
-    console.log(`💾 Saved: ${Math.round((memBefore.heapUsed - memAfter.heapUsed) / 1024 / 1024)}MB`);
-    
-    // סטטיסטיקות browsers
-    console.log(`🌐 Active browsers: ${browserPool.length}`);
-    console.log(`⚡ Busy browsers: ${browserPool.filter(b => b.busy).length}`);
-    console.log('='.repeat(50) + '\n');
-}
-
-// Main scraping function - מיטוב לזיכרון
-async function scrapeWithOptimizations(url) {
+// ✅ פונקציה משופרת - יכולה לעשות גם GET URL וגם FULL SCRAPING
+async function scrapeWithEnhancedBypass(url, fullScraping = false, maxWaitTime = 30000) {
     const startTime = Date.now();
     let browserObj = null;
     let page = null;
     
     try {
-        console.log('🎯 Getting browser from pool...');
+        console.log(`🎯 Starting ${fullScraping ? 'FULL SCRAPING' : 'URL EXTRACTION'} for:`, url.substring(0, 80) + '...');
         browserObj = await getBrowser();
         
-        // Create new page עם הגבלות זיכרון
         page = await browserObj.browser.newPage();
         
-        // ✅ הגבלת זיכרון לדף
-        await page.setCacheEnabled(false); // חסוך זיכרון
-        await page.setViewport({ width: 1366, height: 768 }); // גודל קטן יותר
+        // ✅ הגדרות מתקדמות לעבור Cloudflare
+        await page.setCacheEnabled(false);
+        await page.setViewport({ width: 1366, height: 768 });
+        
+        // ✅ User agent אמיתי ומעודכן
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         
-        // Enhanced stealth measures
+        // ✅ מחיקת כל סימני automation
         await page.evaluateOnNewDocument(() => {
+            // מחיקת webdriver
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
             
+            // הוספת chrome object
             window.chrome = {
                 runtime: {},
                 loadTimes: function() {},
                 csi: function() {}
             };
             
+            // תיקון plugins
             Object.defineProperty(navigator, 'plugins', {
                 get: () => [1, 2, 3, 4, 5]
             });
             
+            // תיקון languages
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['en-US', 'en']
             });
+            
+            // תיקון permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                Promise.resolve({ state: Deno.enabled }) :
+                originalQuery(parameters)
+            );
+            
+            // מניעת זיהוי automation
+            window.navigator.chrome = {
+                runtime: {},
+            };
+            
+            Object.defineProperty(navigator, 'maxTouchPoints', {
+                get: () => 1
+            });
         });
         
-        // Set extra headers
+        // ✅ Headers מתקדמים
         await page.setExtraHTTPHeaders({
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
             'DNT': '1',
             'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
         });
         
-        console.log('🚀 Starting navigation to:', url.substring(0, 100) + '...');
+        console.log('🚀 Starting navigation...');
         
-        // Navigate עם timeout קצר יותר
+        // ✅ Navigation עם timeout מותאם
+        const navigationTimeout = fullScraping ? maxWaitTime : 20000;
+        
         await page.goto(url, {
-            waitUntil: ['domcontentloaded'], // ✅ רק domcontentloaded, לא networkidle2
-            timeout: 20000 // ✅ הקטנו מ-25000
+            waitUntil: ['domcontentloaded'],
+            timeout: navigationTimeout
         });
         
-        // Check for Cloudflare and wait for redirect - מיטוב
         const title = await page.title();
         console.log(`📄 Initial title: ${title.substring(0, 50)}...`);
         
-        if (title.includes('Just a moment') || title.includes('Checking your browser')) {
-            console.log('☁️ Cloudflare detected, waiting for bypass...');
+        // ✅ זיהוי וטיפול ב-Cloudflare המתקדם
+        const isCloudflareChallenge = title.includes('Just a moment') || 
+                                    title.includes('Checking your browser') ||
+                                    title.includes('Verifying you are human') ||
+                                    await page.$('.cf-wrapper') !== null ||
+                                    await page.$('#cf-content') !== null;
+        
+        if (isCloudflareChallenge) {
+            console.log('☁️ Advanced Cloudflare detected, enhanced bypass mode...');
             
-            // Smart waiting מקוצר
-            for (let i = 0; i < 10; i++) { // ✅ הקטנו מ-15 ל-10
-                await page.waitForTimeout(1000);
+            // ✅ אסטרטגיה מתקדמת לעבור Cloudflare
+            const maxAttempts = fullScraping ? Math.floor(maxWaitTime / 2000) : 10;
+            
+            for (let i = 0; i < maxAttempts; i++) {
+                console.log(`⏳ Enhanced bypass attempt ${i + 1}/${maxAttempts}...`);
+                
+                // המתנה אקראית (מחקה התנהגות אנושית)
+                const waitTime = 1500 + Math.random() * 1000;
+                await page.waitForTimeout(waitTime);
                 
                 const currentUrl = page.url();
                 const currentTitle = await page.title();
                 
-                console.log(`⏳ Attempt ${i + 1}/10 - Checking...`);
+                console.log(`🔍 Current: ${currentTitle.substring(0, 30)}... | URL: ${currentUrl.includes('ssd=') ? 'HAS SSD ✅' : 'NO SSD'}`);
                 
-                if (currentUrl.includes('ssd=') || !currentTitle.includes('Just a moment')) {
-                    console.log('✅ Passed Cloudflare check');
+                // בדיקות מתקדמות לזיהוי הצלחה
+                const hasPassedCloudflare = !currentTitle.includes('Just a moment') && 
+                                          !currentTitle.includes('Checking your browser') &&
+                                          !currentTitle.includes('Verifying you are human');
+                
+                const hasContent = await page.evaluate(() => {
+                    const bodyText = document.body ? document.body.innerText : '';
+                    return bodyText.length > 500 && !bodyText.includes('Checking your browser');
+                });
+                
+                if (hasPassedCloudflare && hasContent) {
+                    console.log('✅ Successfully bypassed advanced Cloudflare!');
+                    if (fullScraping) {
+                        // המתנה נוספת לטעינת תוכן מלא
+                        console.log('⏳ Waiting for full content load...');
+                        await page.waitForTimeout(3000);
+                    }
                     break;
                 }
+                
+                // אם זה full scraping, נסה לזהות אלמנטים ספציפיים
+                if (fullScraping) {
+                    try {
+                        // חפש סימנים של דף חלקים
+                        const hasPartContent = await page.evaluate(() => {
+                            return document.body.innerHTML.includes('part') || 
+                                   document.body.innerHTML.includes('oem') ||
+                                   document.querySelector('.part-search-tr') !== null ||
+                                   document.querySelector('[data-title]') !== null;
+                        });
+                        
+                        if (hasPartContent) {
+                            console.log('✅ Part content detected! Cloudflare bypassed.');
+                            break;
+                        }
+                    } catch (e) {}
+                }
+                
+                // המתנה לפני הנסיון הבא
+                if (i < maxAttempts - 1) {
+                    await page.waitForTimeout(500);
+                }
+            }
+        } else {
+            console.log('✅ No Cloudflare detected or already bypassed');
+            if (fullScraping) {
+                // המתנה קצרה לטעינת תוכן
+                await page.waitForTimeout(2000);
             }
         }
         
-        // Final wait קצר יותר
-        await page.waitForTimeout(500); // ✅ הקטנו מ-1000
+        // Final wait
+        await page.waitForTimeout(fullScraping ? 1000 : 500);
         
-        // Get final results
+        // Get results
         const finalUrl = page.url();
         const html = await page.content();
         const cookies = await page.cookies();
         const elapsed = Date.now() - startTime;
         
-        console.log(`✅ Completed in ${elapsed}ms - Has ssd: ${finalUrl.includes('ssd=') ? 'YES' : 'NO'}`);
+        console.log(`✅ ${fullScraping ? 'FULL SCRAPING' : 'URL EXTRACTION'} completed in ${elapsed}ms`);
+        console.log(`🔗 Final URL: ${finalUrl.substring(0, 100)}...`);
+        console.log(`📄 HTML Length: ${html.length} bytes`);
+        console.log(`🎯 Has ssd param: ${finalUrl.includes('ssd=') ? 'YES ✅' : 'NO ❌'}`);
         
         return {
             success: true,
@@ -254,7 +314,8 @@ async function scrapeWithOptimizations(url) {
             url: finalUrl,
             cookies: cookies,
             hasSSd: finalUrl.includes('ssd='),
-            elapsed: elapsed
+            elapsed: elapsed,
+            scrapingType: fullScraping ? 'full' : 'url_only'
         };
         
     } catch (error) {
@@ -266,10 +327,9 @@ async function scrapeWithOptimizations(url) {
         };
         
     } finally {
-        // ✅ ניקוי יסודי
         if (page) {
             await page.close().catch(() => {});
-            page = null; // Clear reference
+            page = null;
         }
         if (browserObj) {
             releaseBrowser(browserObj);
@@ -277,12 +337,39 @@ async function scrapeWithOptimizations(url) {
     }
 }
 
-// Main endpoint
+// Memory cleanup function
+async function memoryCleanup() {
+    console.log('\n' + '='.repeat(50));
+    console.log('🧹 Running memory cleanup...');
+    
+    const memBefore = process.memoryUsage();
+    console.log(`📊 Memory before: ${Math.round(memBefore.heapUsed / 1024 / 1024)}MB`);
+    
+    if (global.gc) {
+        global.gc();
+    }
+    
+    const memAfter = process.memoryUsage();
+    console.log(`📊 Memory after: ${Math.round(memAfter.heapUsed / 1024 / 1024)}MB`);
+    console.log(`💾 Saved: ${Math.round((memBefore.heapUsed - memAfter.heapUsed) / 1024 / 1024)}MB`);
+    
+    console.log(`🌐 Active browsers: ${browserPool.length}`);
+    console.log(`⚡ Busy browsers: ${browserPool.filter(b => b.busy).length}`);
+    console.log('='.repeat(50) + '\n');
+}
+
+// Main endpoint - תומך בשני מצבים
 app.post('/v1', async (req, res) => {
     const startTime = Date.now();
     
     try {
-        const { cmd, url, maxTimeout = 25000, session } = req.body; // ✅ הקטנו timeout
+        const { 
+            cmd, 
+            url, 
+            maxTimeout = 30000, 
+            session,
+            fullScraping = false // ✅ פרמטר חדש לבחירת מצב
+        } = req.body;
         
         if (!url) {
             return res.status(400).json({
@@ -291,19 +378,31 @@ app.post('/v1', async (req, res) => {
             });
         }
         
-        console.log(`\n📨 Request: ${url.substring(0, 80)}... (${maxTimeout}ms timeout)`);
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`📨 New Request at ${new Date().toISOString()}`);
+        console.log(`🔗 URL: ${url.substring(0, 100)}...`);
+        console.log(`⏱️ Timeout: ${maxTimeout}ms`);
+        console.log(`🎯 Mode: ${fullScraping ? 'FULL SCRAPING' : 'URL EXTRACTION'}`);
+        console.log(`${'='.repeat(60)}\n`);
         
         // Run scraping with timeout
         const result = await Promise.race([
-            scrapeWithOptimizations(url),
+            scrapeWithEnhancedBypass(url, fullScraping, maxTimeout),
             new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Timeout')), maxTimeout)
+                setTimeout(() => reject(new Error('Timeout')), maxTimeout + 5000)
             )
         ]);
         
         if (result.success) {
             const elapsed = Date.now() - startTime;
-            console.log(`✅ SUCCESS - ${elapsed}ms - ${result.html?.length || 0} bytes`);
+            
+            console.log(`\n${'='.repeat(60)}`);
+            console.log(`✅ SUCCESS - Total time: ${elapsed}ms`);
+            console.log(`🔗 Final URL: ${result.url?.substring(0, 120) || 'N/A'}...`);
+            console.log(`📄 HTML Length: ${result.html?.length || 0} bytes`);
+            console.log(`🎯 Has ssd param: ${result.hasSSd ? 'YES ✅' : 'NO ❌'}`);
+            console.log(`🚀 Scraping type: ${result.scrapingType}`);
+            console.log(`${'='.repeat(60)}\n`);
             
             res.json({
                 status: 'ok',
@@ -317,15 +416,18 @@ app.post('/v1', async (req, res) => {
                 },
                 startTimestamp: startTime,
                 endTimestamp: Date.now(),
-                version: '4.1.0-memory-optimized',
-                hasSSd: result.hasSSd || false
+                version: '4.2.0-enhanced-cloudflare-bypass',
+                hasSSd: result.hasSSd || false,
+                scrapingType: result.scrapingType
             });
         } else {
             throw new Error(result.error || 'Unknown error');
         }
         
     } catch (error) {
-        console.error(`❌ REQUEST FAILED:`, error.message);
+        console.error(`\n${'='.repeat(60)}`);
+        console.error('❌ REQUEST FAILED:', error.message);
+        console.error(`${'='.repeat(60)}\n`);
         
         res.status(500).json({
             status: 'error',
@@ -335,7 +437,7 @@ app.post('/v1', async (req, res) => {
     }
 });
 
-// Enhanced health check
+// Health check
 app.get('/health', async (req, res) => {
     const memory = process.memoryUsage();
     
@@ -353,7 +455,13 @@ app.get('/health', async (req, res) => {
             id: id.toString().substring(-8),
             requests: stats.requests,
             age: Math.round((Date.now() - stats.created) / 1000) + 's'
-        }))
+        })),
+        features: [
+            'Enhanced Cloudflare bypass',
+            'Full scraping support',
+            'Memory optimization',
+            'Browser recycling'
+        ]
     });
 });
 
@@ -361,11 +469,30 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
     const memory = process.memoryUsage();
     res.send(`
-        <h1>⚡ Memory-Optimized Puppeteer v4.1</h1>
-        <p><strong>Status:</strong> Running</p>
+        <h1>⚡ Enhanced Puppeteer Scraper v4.2</h1>
+        <p><strong>Status:</strong> Running with Enhanced Cloudflare Bypass</p>
         <p><strong>Memory:</strong> ${Math.round(memory.heapUsed / 1024 / 1024)}MB used</p>
         <p><strong>Browsers:</strong> ${browserPool.length} (${browserPool.filter(b => b.busy).length} busy)</p>
-        <p><strong>Optimizations:</strong> ✅ Memory limits, ✅ Browser recycling, ✅ Auto cleanup</p>
+        
+        <h3>🎯 Modes Available:</h3>
+        <ul>
+            <li><strong>URL Extraction:</strong> Fast URL getting (~2s)</li>
+            <li><strong>Full Scraping:</strong> Complete page scraping (~30s)</li>
+        </ul>
+        
+        <h3>🚀 Features:</h3>
+        <ul>
+            <li>✅ Enhanced Cloudflare bypass</li>
+            <li>✅ Memory optimization</li>
+            <li>✅ Browser recycling</li>
+            <li>✅ Supports both scraping modes</li>
+        </ul>
+        
+        <h3>📖 Usage:</h3>
+        <p><strong>URL Extraction:</strong><br>
+        <code>{"cmd": "request.get", "url": "...", "fullScraping": false}</code></p>
+        <p><strong>Full Scraping:</strong><br>
+        <code>{"cmd": "request.get", "url": "...", "fullScraping": true, "maxTimeout": 60000}</code></p>
     `);
 });
 
@@ -373,22 +500,21 @@ app.get('/', (req, res) => {
 app.listen(PORT, '0.0.0.0', async () => {
     console.log(`
 ╔════════════════════════════════════════╗
-║   ⚡ Memory-Optimized Scraper v4.1     ║
+║   ⚡ Enhanced Puppeteer v4.2           ║
 ║   Port: ${PORT}                            ║
-║   Max Browsers: ${MAX_BROWSERS}                     ║
-║   Memory Limits: ENABLED ✅            ║
+║   Features: Dual-mode scraping        ║
+║   Cloudflare: Enhanced bypass ✅       ║
 ╚════════════════════════════════════════╝
     `);
     
-    console.log('🚀 Initializing optimized browser pool...');
+    console.log('🚀 Initializing enhanced browser pool...');
     await initBrowserPool();
     
-    // ✅ הפעלת ניקוי זיכרון כל דקה
     setInterval(memoryCleanup, 60000);
-    console.log('✅ Ready with memory management!');
+    console.log('✅ Ready with enhanced Cloudflare bypass!');
 });
 
-// Graceful shutdown עם ניקוי יסודי
+// Graceful shutdown
 process.on('SIGTERM', async () => {
     console.log('📛 SIGTERM received, cleaning up...');
     for (const browserObj of browserPool) {
@@ -399,10 +525,8 @@ process.on('SIGTERM', async () => {
     process.exit(0);
 });
 
-// Handle errors
 process.on('uncaughtException', (error) => {
     console.error('💥 Uncaught Exception:', error.message);
-    // נסה לנקות זיכרון
     if (global.gc) global.gc();
 });
 
