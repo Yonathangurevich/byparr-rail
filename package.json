@@ -1,14 +1,16 @@
 {
-  "name": "playwright-scraper",
-  "version": "1.0.0",
+  "name": "puppeteer-ultra-scraper",
+  "version": "4.0.0",
+  "description": "Ultra-fast Puppeteer scraper",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "playwright": "^1.40.0",
-    "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "puppeteer": "^21.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
