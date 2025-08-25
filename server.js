@@ -148,23 +148,64 @@ async function scrapeWithEnhancedBypass(url, fullScraping = false, maxWaitTime =
         // ✅ User agent אמיתי ומעודכן
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         
-        // ✅ מחיקת כל סימני automation
+        // ✅ מחיקת כל סימני automation + טכניקות מתקדמות
         await page.evaluateOnNewDocument(() => {
             // מחיקת webdriver
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined
             });
             
-            // הוספת chrome object
+            // הוספת chrome object מלא
             window.chrome = {
-                runtime: {},
-                loadTimes: function() {},
-                csi: function() {}
+                runtime: {
+                    onConnect: null,
+                    onMessage: null
+                },
+                loadTimes: function() {
+                    return {
+                        commitLoadTime: 1484781345.0928,
+                        connectionInfo: 'http/1.1',
+                        finishDocumentLoadTime: 1484781345.6735,
+                        finishLoadTime: 1484781345.6735,
+                        firstPaintAfterLoadTime: 0,
+                        firstPaintTime: 1484781345.6735,
+                        navigationType: 'Navigation',
+                        npnNegotiatedProtocol: 'unknown',
+                        requestTime: 0,
+                        startLoadTime: 1484781345.0637,
+                        wasAlternateProtocolAvailable: false,
+                        wasFetchedViaSpdy: false,
+                        wasNpnNegotiated: false
+                    };
+                },
+                csi: function() {
+                    return {
+                        startE: Date.now(),
+                        onloadT: Date.now(),
+                        pageT: Date.now(),
+                        tran: 15
+                    };
+                },
+                app: {}
             };
             
-            // תיקון plugins
+            // תיקון plugins מתקדם
             Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
+                get: () => ({
+                    0: {
+                        0: {
+                            description: "Portable Document Format",
+                            enabledPlugin: "[object Plugin]",
+                            suffixes: "pdf",
+                            type: "application/pdf"
+                        },
+                        description: "Adobe Acrobat",
+                        filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
+                        length: 1,
+                        name: "Chrome PDF Plugin"
+                    },
+                    length: 1
+                })
             });
             
             // תיקון languages
@@ -172,21 +213,71 @@ async function scrapeWithEnhancedBypass(url, fullScraping = false, maxWaitTime =
                 get: () => ['en-US', 'en']
             });
             
-            // תיקון permissions
+            // תיקון permissions API
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
                 parameters.name === 'notifications' ?
-                Promise.resolve({ state: Deno.enabled }) :
+                Promise.resolve({ state: 'granted' }) :
                 originalQuery(parameters)
             );
             
-            // מניעת זיהוי automation
-            window.navigator.chrome = {
-                runtime: {},
-            };
-            
+            // תיקון maxTouchPoints
             Object.defineProperty(navigator, 'maxTouchPoints', {
                 get: () => 1
+            });
+            
+            // ✅ תוספות חדשות למנוע זיהוי
+            
+            // מחיקת automation flags
+            delete window._phantom;
+            delete window.__nightmare;
+            delete window._selenium;
+            delete window.callPhantom;
+            delete window.callSelenium;
+            delete window.__webdriver_evaluate;
+            delete window.__selenium_evaluate;
+            delete window.__webdriver_script_function;
+            delete window.__webdriver_script_func;
+            delete window.__webdriver_script_fn;
+            delete window.__fxdriver_evaluate;
+            delete window.__driver_unwrapped;
+            delete window.__webdriver_unwrapped;
+            delete window.__driver_evaluate;
+            delete window.__selenium_unwrapped;
+            delete window.__fxdriver_unwrapped;
+            
+            // הוספת human-like properties
+            Object.defineProperty(navigator, 'hardwareConcurrency', {
+                get: () => 4
+            });
+            
+            Object.defineProperty(navigator, 'deviceMemory', {
+                get: () => 8
+            });
+            
+            // תיקון screen properties
+            Object.defineProperty(screen, 'availHeight', {
+                get: () => 738
+            });
+            
+            Object.defineProperty(screen, 'availWidth', {
+                get: () => 1366
+            });
+            
+            // הוספת mouse movement simulation
+            let mouseX = 0, mouseY = 0;
+            document.addEventListener('DOMContentLoaded', () => {
+                // סימולציה של תנועת עכבר
+                setInterval(() => {
+                    mouseX += (Math.random() - 0.5) * 2;
+                    mouseY += (Math.random() - 0.5) * 2;
+                    
+                    const event = new MouseEvent('mousemove', {
+                        clientX: mouseX,
+                        clientY: mouseY
+                    });
+                    document.dispatchEvent(event);
+                }, 100);
             });
         });
         
@@ -218,7 +309,7 @@ async function scrapeWithEnhancedBypass(url, fullScraping = false, maxWaitTime =
         const title = await page.title();
         console.log(`📄 Initial title: ${title.substring(0, 50)}...`);
         
-        // ✅ זיהוי וטיפול ב-Cloudflare המתקדם
+        // ✅ זיהוי וטיפול ב-Cloudflare המתקדם עם אסטרטגיה חכמה
         const isCloudflareChallenge = title.includes('Just a moment') || 
                                     title.includes('Checking your browser') ||
                                     title.includes('Verifying you are human') ||
@@ -226,70 +317,97 @@ async function scrapeWithEnhancedBypass(url, fullScraping = false, maxWaitTime =
                                     await page.$('#cf-content') !== null;
         
         if (isCloudflareChallenge) {
-            console.log('☁️ Advanced Cloudflare detected, enhanced bypass mode...');
+            console.log('☁️ Advanced Cloudflare detected, patient bypass mode...');
             
-            // ✅ אסטרטגיה מתקדמת לעבור Cloudflare
-            const maxAttempts = fullScraping ? Math.floor(maxWaitTime / 2000) : 10;
+            // ✅ אסטרטגיה סבלנית - עד 30 שניות למצב מלא
+            const maxWaitSeconds = fullScraping ? Math.min(maxWaitTime / 1000, 45) : 15;
+            const startBypass = Date.now();
             
-            for (let i = 0; i < maxAttempts; i++) {
-                console.log(`⏳ Enhanced bypass attempt ${i + 1}/${maxAttempts}...`);
+            // ✅ לולאה רציפה עם בדיקות תכופות
+            let attempt = 0;
+            let success = false;
+            
+            while ((Date.now() - startBypass) < (maxWaitSeconds * 1000) && !success) {
+                attempt++;
+                const elapsed = Math.round((Date.now() - startBypass) / 1000);
                 
-                // המתנה אקראית (מחקה התנהגות אנושית)
-                const waitTime = 1500 + Math.random() * 1000;
+                console.log(`⏳ Patient wait ${attempt} - ${elapsed}s/${maxWaitSeconds}s...`);
+                
+                // המתנה של 2-4 שניות (יותר אנושי)
+                const waitTime = fullScraping ? (2000 + Math.random() * 2000) : (1500 + Math.random() * 1000);
                 await page.waitForTimeout(waitTime);
                 
-                const currentUrl = page.url();
-                const currentTitle = await page.title();
-                
-                console.log(`🔍 Current: ${currentTitle.substring(0, 30)}... | URL: ${currentUrl.includes('ssd=') ? 'HAS SSD ✅' : 'NO SSD'}`);
-                
-                // בדיקות מתקדמות לזיהוי הצלחה
-                const hasPassedCloudflare = !currentTitle.includes('Just a moment') && 
-                                          !currentTitle.includes('Checking your browser') &&
-                                          !currentTitle.includes('Verifying you are human');
-                
-                const hasContent = await page.evaluate(() => {
-                    const bodyText = document.body ? document.body.innerText : '';
-                    return bodyText.length > 500 && !bodyText.includes('Checking your browser');
-                });
-                
-                if (hasPassedCloudflare && hasContent) {
-                    console.log('✅ Successfully bypassed advanced Cloudflare!');
+                try {
+                    const currentUrl = page.url();
+                    const currentTitle = await page.title();
+                    
+                    console.log(`🔍 Check: "${currentTitle.substring(0, 40)}..." | URL: ${currentUrl.includes('ssd=') ? 'HAS SSD ✅' : 'NO SSD'}`);
+                    
+                    // ✅ בדיקות מתקדמות יותר
+                    const titleCheck = !currentTitle.includes('Just a moment') && 
+                                      !currentTitle.includes('Checking your browser') &&
+                                      !currentTitle.includes('Verifying you are human') &&
+                                      !currentTitle.includes('Please wait') &&
+                                      !currentTitle.includes('Loading');
+                    
+                    // בדיקת תוכן בדף
+                    const contentCheck = await page.evaluate(() => {
+                        const bodyText = document.body ? document.body.innerText : '';
+                        const bodyHtml = document.body ? document.body.innerHTML : '';
+                        
+                        // בדיקה שיש תוכן אמיתי
+                        const hasRealContent = bodyText.length > 1000;
+                        const noCloudflareText = !bodyText.includes('Checking your browser') && 
+                                               !bodyText.includes('Verifying you are human') &&
+                                               !bodyText.includes('Just a moment');
+                        
+                        return hasRealContent && noCloudflareText;
+                    });
+                    
+                    // בדיקה ספציפית לדף חלקים (אם זה full scraping)
+                    let partsContentCheck = true;
                     if (fullScraping) {
-                        // המתנה נוספת לטעינת תוכן מלא
-                        console.log('⏳ Waiting for full content load...');
-                        await page.waitForTimeout(3000);
-                    }
-                    break;
-                }
-                
-                // אם זה full scraping, נסה לזהות אלמנטים ספציפיים
-                if (fullScraping) {
-                    try {
-                        // חפש סימנים של דף חלקים
-                        const hasPartContent = await page.evaluate(() => {
-                            return document.body.innerHTML.includes('part') || 
-                                   document.body.innerHTML.includes('oem') ||
-                                   document.querySelector('.part-search-tr') !== null ||
-                                   document.querySelector('[data-title]') !== null;
+                        partsContentCheck = await page.evaluate(() => {
+                            const hasPartElements = document.querySelector('.part-search-tr') !== null ||
+                                                  document.querySelector('[data-title]') !== null ||
+                                                  document.body.innerHTML.includes('part-search') ||
+                                                  document.body.innerHTML.includes('data-codeonimage') ||
+                                                  document.body.innerHTML.includes('oem');
+                            return hasPartElements;
                         });
                         
-                        if (hasPartContent) {
-                            console.log('✅ Part content detected! Cloudflare bypassed.');
-                            break;
+                        if (partsContentCheck) {
+                            console.log('🎯 Parts content detected!');
                         }
-                    } catch (e) {}
-                }
-                
-                // המתנה לפני הנסיון הבא
-                if (i < maxAttempts - 1) {
-                    await page.waitForTimeout(500);
+                    }
+                    
+                    // ✅ אם כל הבדיקות עברו
+                    if (titleCheck && contentCheck && partsContentCheck) {
+                        console.log(`✅ Successfully bypassed Cloudflare after ${elapsed}s!`);
+                        success = true;
+                        
+                        if (fullScraping) {
+                            console.log('⏳ Waiting for complete parts loading...');
+                            await page.waitForTimeout(3000); // המתנה נוספת לטעינה מלאה
+                        }
+                        break;
+                    } else {
+                        console.log(`⏱️ Still waiting... (title: ${titleCheck}, content: ${contentCheck}, parts: ${partsContentCheck})`);
+                    }
+                    
+                } catch (evalError) {
+                    console.log(`⚠️ Evaluation error: ${evalError.message}`);
                 }
             }
+            
+            if (!success) {
+                const elapsed = Math.round((Date.now() - startBypass) / 1000);
+                console.log(`⏰ Cloudflare bypass timeout after ${elapsed}s - continuing anyway...`);
+            }
+            
         } else {
             console.log('✅ No Cloudflare detected or already bypassed');
             if (fullScraping) {
-                // המתנה קצרה לטעינת תוכן
                 await page.waitForTimeout(2000);
             }
         }
