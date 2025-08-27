@@ -1,33 +1,14 @@
-# Simple Dockerfile that should definitely work
-FROM node:20-slim
+FROM node:18
 
-WORKDIR /usr/src/app
+WORKDIR /app
 
-# Basic environment setup
-ENV NODE_ENV=production
-ENV PORT=8080
-ENV PUPPETEER_SKIP_DOWNLOAD=false
-
-# Install basic dependencies for Puppeteer
-RUN apt-get update && apt-get install -y \
-    chromium \
-    && rm -rf /var/lib/apt/lists/*
-
-# Tell Puppeteer to use installed Chromium
+RUN apt-get update && apt-get install -y chromium
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Copy and install npm packages
-COPY package*.json ./
-RUN npm install --omit=dev
+COPY package.json .
+RUN npm install
 
-# Copy source code
-COPY . .
+COPY server.js .
 
-# Expose port
 EXPOSE 8080
-
-# Simple health check
-HEALTHCHECK CMD curl --fail http://localhost:8080/health || exit 1
-
-# Start the app
 CMD ["node", "server.js"]
