@@ -1,67 +1,82 @@
-# Dockerfile for Playwright + Stealth
-FROM node:18-slim
+# Use Node.js 20 slim for optimal performance
+FROM node:20-slim
 
-# Install system dependencies for Playwright
+# Set working directory
+WORKDIR /usr/src/app
+
+# Environment variables for Cloud Run
+ENV PUPPETEER_SKIP_DOWNLOAD=false
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV NODE_OPTIONS="--max-old-space-size=768 --optimize-for-size"
+
+# Install system dependencies required by Puppeteer
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
     ca-certificates \
-    xvfb \
-    fonts-liberation \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
-    libcairo-gobject2 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
+    procps \
+    libxss1 \
     libgconf-2-4 \
-    libgdk-pixbuf2.0-0 \
-    libglib2.0-0 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libpango-1.0-0 \
+    libxrandr2 \
+    libasound2 \
     libpangocairo-1.0-0 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
+    libatk1.0-0 \
+    libcairo-gobject2 \
+    libgtk-3-0 \
+    libgdk-pixbuf2.0-0 \
     libxcomposite1 \
     libxcursor1 \
     libxdamage1 \
-    libxext6 \
-    libxfixes3 \
     libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    libxss1 \
     libxtst6 \
+    libnss3 \
+    libcups2 \
+    libxrandr2 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libatk1.0-0 \
+    libcairo-gobject2 \
+    libgtk-3-0 \
+    libgdk-pixbuf2.0-0 \
+    fonts-liberation \
+    libappindicator3-1 \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libxss1 \
+    libgconf-2-4 \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /app
-
-# Copy package files
+# Copy package files first for better layer caching
 COPY package*.json ./
 
 # Install Node.js dependencies
-RUN npm install
+RUN npm ci --omit=dev --no-audit --no-fund && \
+    npm cache clean --force
 
-# Install Playwright browsers
-RUN npx playwright install chromium
-RUN npx playwright install-deps chromium
-
-# Copy application code
+# Copy application source code
 COPY . .
 
-# Set environment variables
-ENV NODE_ENV=production
-ENV DISPLAY=:99
+# Create user to run the application (security best practice)
+RUN groupadd -r pptruser && useradd -r -g pptruser -G audio,video pptruser \
+    && mkdir -p /home/pptruser/Downloads \
+    && chown -R pptruser:pptruser /home/pptruser \
+    && chown -R pptruser:pptruser /usr/src/app
 
-# Expose port
+# Switch to non-root user
+USER pptruser
+
+# Expose the port
 EXPOSE 8080
 
-# Start XVFB and the application
-CMD Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && node server.js
+# Health check for Cloud Run
+HEALTHCHECK --interval=30s --timeout=15s --start-period=10s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:8080/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1))" || exit 1
+
+# Start the application
+CMD ["node", "server.js"]
