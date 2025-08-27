@@ -1,593 +1,517 @@
 const express = require('express');
-const { chromium } = require('playwright-extra');
-const stealth = require('puppeteer-extra-plugin-stealth')();
-
-// Add stealth plugin to playwright
-chromium.use(stealth);
+const puppeteer = require('puppeteer');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.PORT || 8080;
+const MAX_CONCURRENT_PAGES = 3;
+const PAGE_TIMEOUT = 60000; // 60 שניות
 
-// Browser management
-let browserPool = [];
-const MAX_BROWSERS = 1;
-const MAX_PAGES_PER_BROWSER = 50;
+// Cloud Run optimized browser arguments
+const BROWSER_ARGS = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--no-first-run',
+    '--disable-extensions',
+    '--disable-default-apps',
+    '--disable-background-networking',
+    '--disable-sync',
+    '--disable-translate',
+    '--hide-scrollbars',
+    '--metrics-recording-only',
+    '--mute-audio',
+    '--no-default-browser-check',
+    '--no-pings',
+    '--password-store=basic',
+    '--use-mock-keychain',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=VizDisplayCompositor',
+    '--memory-pressure-off',
+    '--aggressive-cache-discard',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-features=TranslateUI',
+    '--disable-ipc-flooding-protection'
+];
 
-console.log('🎭 Initializing Playwright + Stealth Plugin...');
+// Global browser management
+let globalBrowser = null;
+let activePagesCount = 0;
+let browserStartTime = Date.now();
 
-// ✅ Browser launch options optimized for Cloudflare bypass
-const PLAYWRIGHT_LAUNCH_OPTIONS = {
-    headless: false, // Try headful first, fallback to headless
-    args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-features=VizDisplayCompositor',
-        '--window-size=1920,1080',
-        '--start-maximized',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--memory-pressure-off',
-        '--max_old_space_size=1024'
-    ],
-    ignoreDefaultArgs: ['--enable-automation'],
-    env: {
-        ...process.env,
-        DISPLAY: ':99'
-    }
-};
-
-// Browser creation with fallback
-async function createPlaywrightBrowser() {
+// Create optimized browser instance
+async function createBrowser() {
     try {
-        console.log('🎭 Creating Playwright browser with stealth...');
+        console.log('🚀 Creating optimized browser for Cloud Run...');
         
-        // Try headful first
-        const browser = await chromium.launch(PLAYWRIGHT_LAUNCH_OPTIONS);
+        if (globalBrowser) {
+            try {
+                await globalBrowser.close();
+                console.log('🧹 Previous browser closed');
+            } catch (e) {
+                console.log('⚠️ Error closing previous browser:', e.message);
+            }
+        }
         
-        console.log('✅ Playwright browser (headful) created successfully!');
+        globalBrowser = await puppeteer.launch({
+            headless: 'new',
+            args: BROWSER_ARGS,
+            ignoreDefaultArgs: ['--enable-automation', '--enable-blink-features=AutomationControlled'],
+            defaultViewport: { width: 1366, height: 768 },
+            handleSIGINT: false,
+            handleSIGTERM: false,
+            handleSIGHUP: false
+        });
         
-        return {
-            browser,
-            busy: false,
-            id: Date.now() + Math.random(),
-            pages: 0,
-            created: Date.now(),
-            isHeadless: false
-        };
+        // Browser event listeners
+        globalBrowser.on('disconnected', () => {
+            console.log('🔌 Browser disconnected, resetting...');
+            globalBrowser = null;
+            activePagesCount = 0;
+        });
+
+        browserStartTime = Date.now();
+        activePagesCount = 0;
+        
+        console.log('✅ Browser created successfully');
+        return globalBrowser;
         
     } catch (error) {
-        console.log('⚠️ Headful failed, trying headless...', error.message);
-        
-        try {
-            // Fallback to headless
-            const headlessOptions = {
-                ...PLAYWRIGHT_LAUNCH_OPTIONS,
-                headless: true,
-                args: PLAYWRIGHT_LAUNCH_OPTIONS.args.filter(arg => 
-                    !arg.includes('start-maximized') && !arg.includes('window-size')
-                )
-            };
-            
-            const browser = await chromium.launch(headlessOptions);
-            console.log('✅ Playwright browser (headless fallback) created!');
-            
-            return {
-                browser,
-                busy: false,
-                id: Date.now() + Math.random(),
-                pages: 0,
-                created: Date.now(),
-                isHeadless: true
-            };
-            
-        } catch (fallbackError) {
-            console.error('❌ Both headful and headless failed:', fallbackError.message);
-            return null;
-        }
+        console.error('❌ Failed to create browser:', error.message);
+        globalBrowser = null;
+        throw error;
     }
 }
 
-async function initBrowserPool() {
-    console.log('🚀 Initializing Playwright browser pool...');
-    
-    // Setup XVFB virtual display for headful mode
-    try {
-        const { spawn } = require('child_process');
-        const xvfb = spawn('Xvfb', [':99', '-screen', '0', '1920x1080x24'], {
-            detached: true,
-            stdio: 'ignore'
-        });
-        process.env.DISPLAY = ':99';
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        console.log('🖥️ Virtual display ready');
-    } catch (xvfbError) {
-        console.log('⚠️ XVFB setup failed, headless will be used:', xvfbError.message);
-    }
-    
-    const browserObj = await createPlaywrightBrowser();
-    if (browserObj) {
-        browserPool.push(browserObj);
-        console.log(`✅ Playwright Browser ready (${browserObj.isHeadless ? 'headless' : 'headful'})`);
-    }
-}
-
+// Get or create browser
 async function getBrowser() {
-    let browserObj = browserPool.find(b => !b.busy);
+    const browserAge = Date.now() - browserStartTime;
     
-    if (!browserObj) {
-        console.log('⏳ All browsers busy, waiting...');
-        for (let i = 0; i < 100; i++) {
-            await new Promise(resolve => setTimeout(resolve, 200));
-            browserObj = browserPool.find(b => !b.busy);
-            if (browserObj) break;
-        }
+    // Recreate browser if old or missing
+    if (!globalBrowser || browserAge > 600000) { // 10 minutes max age
+        console.log('🔄 Browser needs refresh (age:', Math.round(browserAge/1000), 'seconds)');
+        await createBrowser();
     }
     
-    if (!browserObj) {
-        throw new Error('No browsers available');
-    }
-    
-    // Recycle browser if used too much
-    if (browserObj.pages >= MAX_PAGES_PER_BROWSER) {
-        console.log(`🔄 Browser reached page limit, recycling...`);
-        await recycleBrowser(browserObj);
-    }
-    
-    browserObj.busy = true;
-    browserObj.pages++;
-    
-    return browserObj;
+    return globalBrowser;
 }
 
-async function recycleBrowser(browserObj) {
-    try {
-        await browserObj.browser.close();
-        const newBrowserObj = await createPlaywrightBrowser();
-        if (newBrowserObj) {
-            const index = browserPool.indexOf(browserObj);
-            browserPool[index] = newBrowserObj;
-            console.log('✅ Browser recycled with fresh session');
-        }
-    } catch (error) {
-        console.error('❌ Browser recycle error:', error.message);
-    }
-}
-
-function releaseBrowser(browserObj) {
-    if (browserObj) {
-        browserObj.busy = false;
-        console.log(`📤 Playwright browser released (${browserObj.pages} pages used)`);
-    }
-}
-
-// ✅ Advanced Playwright page setup
-async function setupPlaywrightPage(context) {
-    console.log('🎭 Setting up Playwright page with stealth...');
-    
-    const page = await context.newPage();
-    
-    // ✅ Enhanced viewport and user agent
-    await page.setViewportSize({ width: 1920, height: 1080 });
-    
-    const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    ];
-    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-    await page.setUserAgent(randomUA);
-    
-    // ✅ Enhanced headers
-    await page.setExtraHTTPHeaders({
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'no-cache'
-    });
-    
-    // ✅ Additional stealth measures
-    await page.addInitScript(() => {
-        // Remove webdriver traces
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        
-        // Add realistic properties
-        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-        
-        // Chrome object
-        window.chrome = {
-            runtime: {},
-            loadTimes: function() { return {}; },
-            csi: function() { return {}; }
-        };
-    });
-    
-    console.log('✅ Playwright page setup complete with stealth');
-    return page;
-}
-
-// ✅ Playwright Cloudflare bypass
-async function playwrightCloudflareBypass(page, maxWaitTime = 120000) {
-    console.log('🎭 Playwright Cloudflare bypass starting...');
-    
+// Enhanced URL scraping function
+async function scrapeUrl(url, options = {}) {
     const startTime = Date.now();
-    let attempt = 0;
-    
-    while ((Date.now() - startTime) < maxWaitTime) {
-        attempt++;
-        const elapsed = Math.round((Date.now() - startTime) / 1000);
-        
-        console.log(`🎭 Playwright attempt ${attempt} - ${elapsed}s`);
-        
-        try {
-            const title = await page.title();
-            const url = page.url();
-            
-            console.log(`📍 Title: "${title.substring(0, 50)}..."`);
-            
-            const cloudflareActive = title.includes('Just a moment') ||
-                                   title.includes('Checking your browser') ||
-                                   title.includes('Verifying you are human');
-            
-            if (!cloudflareActive || url.includes('ssd=')) {
-                const hasContent = await page.evaluate(() => {
-                    const bodyText = document.body?.innerText || '';
-                    return bodyText.length > 800 && !bodyText.includes('Just a moment');
-                });
-                
-                if (hasContent || url.includes('ssd=')) {
-                    console.log(`🎭 Playwright SUCCESS after ${elapsed}s!`);
-                    return true;
-                }
-            }
-            
-            if (cloudflareActive) {
-                console.log('☁️ Cloudflare detected, using Playwright techniques...');
-                
-                // Human-like interactions
-                if (attempt <= 3) {
-                    await page.mouse.move(500 + Math.random() * 400, 300 + Math.random() * 300);
-                    await page.waitForTimeout(500);
-                    
-                    // Look for iframes and interact
-                    const iframes = page.frames();
-                    if (iframes.length > 1) {
-                        console.log(`🔍 Found ${iframes.length} frames`);
-                        for (const frame of iframes.slice(1, 3)) {
-                            try {
-                                await frame.click('body', { timeout: 1000 });
-                                await page.waitForTimeout(1000);
-                            } catch (e) {}
-                        }
-                    }
-                    
-                    // Click on page
-                    await page.mouse.click(683, 384);
-                    await page.waitForTimeout(1000);
-                }
-                
-                // Progressive waiting
-                const waitTime = Math.min(8000 + (attempt * 3000), 20000);
-                console.log(`⏳ Playwright wait: ${Math.round(waitTime/1000)}s`);
-                
-                // Wait with checks
-                const chunks = Math.ceil(waitTime / 2000);
-                for (let i = 0; i < chunks; i++) {
-                    await page.waitForTimeout(2000);
-                    
-                    const intermediateTitle = await page.title();
-                    if (!intermediateTitle.includes('Just a moment') || page.url().includes('ssd=')) {
-                        console.log('🚀 Status changed during wait!');
-                        break;
-                    }
-                }
-            }
-            
-        } catch (error) {
-            console.log(`⚠️ Attempt error: ${error.message}`);
-        }
-    }
-    
-    console.log(`⏰ Playwright bypass completed after ${Math.round((Date.now() - startTime) / 1000)}s`);
-    return false;
-}
-
-// Main scraping function
-async function scrapeWithPlaywright(url, fullScraping = false, maxWaitTime = 180000) {
-    const startTime = Date.now();
-    let browserObj = null;
-    let context = null;
     let page = null;
+    let context = null;
+    const requestId = Math.random().toString(36).substring(2, 8);
+    
+    // Check concurrent pages limit
+    if (activePagesCount >= MAX_CONCURRENT_PAGES) {
+        throw new Error(`Too many concurrent requests. Active: ${activePagesCount}/${MAX_CONCURRENT_PAGES}`);
+    }
     
     try {
-        console.log(`🎭 Starting Playwright ${fullScraping ? 'FULL SCRAPING' : 'URL EXTRACTION'}`);
-        console.log(`🔗 Target: ${url.substring(0, 100)}...`);
+        activePagesCount++;
+        console.log(`[${requestId}] 🔗 Starting (${activePagesCount}/${MAX_CONCURRENT_PAGES}): ${url.substring(0, 50)}...`);
         
-        browserObj = await getBrowser();
+        const browser = await getBrowser();
         
-        // Create context with stealth
-        context = await browserObj.browser.newContext({
-            viewport: { width: 1920, height: 1080 },
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            locale: 'en-US',
-            timezoneId: 'America/New_York',
-            permissions: ['geolocation'],
-            extraHTTPHeaders: {
-                'Accept-Language': 'en-US,en;q=0.9'
+        // Create isolated context
+        context = await browser.createIncognitoBrowserContext();
+        page = await context.newPage();
+        
+        // Optimize page settings
+        await page.setCacheEnabled(false);
+        await page.setViewport({ width: 1366, height: 768 });
+        
+        // Block heavy resources to save memory
+        await page.setRequestInterception(true);
+        page.on('request', (request) => {
+            const resourceType = request.resourceType();
+            if (['image', 'font', 'media', 'stylesheet'].includes(resourceType)) {
+                request.abort();
+            } else {
+                request.continue();
             }
         });
         
-        page = await setupPlaywrightPage(context);
+        // Set realistic user agent
+        await page.setUserAgent(
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        );
         
-        console.log('🚀 Navigating with Playwright...');
+        // Set headers
+        await page.setExtraHTTPHeaders({
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        });
         
-        // Navigate
+        // Anti-detection measures
+        await page.evaluateOnNewDocument(() => {
+            // Hide webdriver
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            
+            // Mock chrome object
+            window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {} };
+            
+            // Mock plugins
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            
+            // Override permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+        });
+        
+        console.log(`[${requestId}] 🌐 Navigating to target...`);
+        
+        // Navigate with timeout
         await page.goto(url, {
             waitUntil: 'domcontentloaded',
-            timeout: 60000
+            timeout: options.timeout || PAGE_TIMEOUT
         });
         
-        // Initial wait
-        console.log('⏳ Initial stabilization...');
-        await page.waitForTimeout(4000);
+        // Check for Cloudflare challenge
+        const title = await page.title();
+        console.log(`[${requestId}] 📄 Page loaded: "${title.substring(0, 40)}..."`);
         
-        // Cloudflare bypass
-        const bypassSuccess = await playwrightCloudflareBypass(page, maxWaitTime - 20000);
-        
-        // Final wait
-        if (fullScraping) {
-            console.log('⏳ Final wait for complete content...');
-            await page.waitForTimeout(6000);
-        } else {
-            await page.waitForTimeout(3000);
+        if (title.includes('Just a moment') || title.includes('Checking your browser')) {
+            console.log(`[${requestId}] ☁️ Cloudflare detected, waiting for bypass...`);
+            
+            let attempts = 0;
+            const maxAttempts = 15;
+            
+            while (attempts < maxAttempts) {
+                await page.waitForTimeout(2000);
+                
+                const currentTitle = await page.title();
+                const currentUrl = page.url();
+                
+                console.log(`[${requestId}] ⏳ Cloudflare check ${attempts + 1}/${maxAttempts}`);
+                
+                // Check if Cloudflare passed
+                if (!currentTitle.includes('Just a moment') && 
+                    !currentTitle.includes('Checking your browser')) {
+                    console.log(`[${requestId}] ✅ Cloudflare bypassed successfully!`);
+                    break;
+                }
+                
+                // Check for success indicators
+                if (currentUrl.includes('ssd=') || currentUrl !== url) {
+                    console.log(`[${requestId}] ✅ URL changed - Cloudflare likely passed`);
+                    break;
+                }
+                
+                attempts++;
+                
+                // Try interaction at halfway point
+                if (attempts === Math.floor(maxAttempts / 2)) {
+                    try {
+                        await page.mouse.click(100, 100);
+                        console.log(`[${requestId}] 🖱️ Attempted page interaction`);
+                    } catch (e) {
+                        console.log(`[${requestId}] ⚠️ Click interaction failed: ${e.message}`);
+                    }
+                }
+            }
+            
+            if (attempts >= maxAttempts) {
+                console.log(`[${requestId}] ⚠️ Cloudflare timeout, proceeding with current state`);
+            }
+            
+            // Additional stabilization wait
+            await page.waitForTimeout(1000);
         }
         
-        // Collect results
+        // Get final results
         const finalUrl = page.url();
         const html = await page.content();
-        const cookies = await context.cookies();
+        const cookies = await page.cookies();
+        
         const elapsed = Date.now() - startTime;
-        
-        console.log(`🎭 Playwright completed in ${elapsed}ms`);
-        console.log(`🔗 Final URL: ${finalUrl.substring(0, 100)}...`);
-        console.log(`📄 Content: ${html.length} bytes`);
-        console.log(`🎯 Has ssd param: ${finalUrl.includes('ssd=') ? 'YES ✅' : 'NO ❌'}`);
-        
-        if (fullScraping) {
-            const hasPartsContent = html.includes('part-search') || 
-                                  html.includes('data-codeonimage') || 
-                                  html.includes('oem');
-            console.log(`🔧 Parts content: ${hasPartsContent ? 'YES ✅' : 'NO ❌'}`);
-        }
+        console.log(`[${requestId}] ✅ Scraping completed successfully in ${elapsed}ms`);
         
         return {
             success: true,
-            html: html,
+            html,
             url: finalUrl,
-            cookies: cookies,
+            cookies,
             hasSSd: finalUrl.includes('ssd='),
-            elapsed: elapsed,
-            scrapingType: fullScraping ? 'playwright_full' : 'playwright_url',
-            bypassSuccess: bypassSuccess
+            elapsed,
+            requestId
         };
         
     } catch (error) {
-        console.error('🎭 Playwright scraping error:', error.message);
+        const elapsed = Date.now() - startTime;
+        console.error(`[${requestId}] ❌ Scraping failed after ${elapsed}ms:`, error.message);
+        
         return {
             success: false,
             error: error.message,
-            url: url
+            url,
+            elapsed,
+            requestId
         };
         
     } finally {
-        if (page) await page.close().catch(() => {});
-        if (context) await context.close().catch(() => {});
-        if (browserObj) releaseBrowser(browserObj);
+        // Always decrement counter
+        activePagesCount = Math.max(0, activePagesCount - 1);
+        
+        // Clean up context
+        if (context) {
+            try {
+                await context.close();
+                console.log(`[${requestId}] 🧹 Context cleaned (${activePagesCount} remaining active)`);
+            } catch (e) {
+                console.log(`[${requestId}] ⚠️ Context cleanup warning: ${e.message}`);
+            }
+        }
     }
 }
 
-// Memory cleanup
-async function playwrightMemoryCleanup() {
-    console.log('\n' + '🎭'.repeat(20));
-    console.log('🧹 Playwright memory cleanup...');
-    
-    const memBefore = process.memoryUsage();
-    console.log(`📊 Memory before: ${Math.round(memBefore.heapUsed / 1024 / 1024)}MB`);
-    
-    if (global.gc) global.gc();
-    
-    const memAfter = process.memoryUsage();
-    console.log(`📊 Memory after: ${Math.round(memAfter.heapUsed / 1024 / 1024)}MB`);
-    console.log(`💾 Freed: ${Math.round((memBefore.heapUsed - memAfter.heapUsed) / 1024 / 1024)}MB`);
-    console.log(`🌐 Active browsers: ${browserPool.length}`);
-    console.log('🎭'.repeat(20) + '\n');
-}
-
-// Main endpoint
+// Main scraping endpoint
 app.post('/v1', async (req, res) => {
+    const requestId = Date.now().toString(36) + Math.random().toString(36).substr(2, 4);
     const startTime = Date.now();
     
     try {
-        const { 
-            cmd, 
-            url, 
-            maxTimeout = 180000, // 3 minutes default
-            session,
-            fullScraping = false
-        } = req.body;
+        const { url, maxTimeout = PAGE_TIMEOUT } = req.body;
         
         if (!url) {
             return res.status(400).json({
                 status: 'error',
-                message: 'URL is required'
+                message: 'URL parameter is required',
+                requestId
             });
         }
         
-        console.log(`\n${'🎭'.repeat(25)}`);
-        console.log(`🎭 Playwright Request at ${new Date().toISOString()}`);
-        console.log(`🔗 URL: ${url.substring(0, 100)}...`);
-        console.log(`⏱️ Timeout: ${maxTimeout}ms`);
-        console.log(`🎯 Mode: ${fullScraping ? 'PLAYWRIGHT FULL' : 'PLAYWRIGHT URL'}`);
-        console.log(`${'🎭'.repeat(25)}\n`);
+        // Validate URL format
+        try {
+            new URL(url);
+        } catch (urlError) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid URL format provided',
+                requestId
+            });
+        }
         
-        const result = await Promise.race([
-            scrapeWithPlaywright(url, fullScraping, maxTimeout),
-            new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Playwright Timeout')), maxTimeout + 20000)
-            )
-        ]);
+        console.log(`\n📨 [${requestId}] New scraping request: ${url.substring(0, 60)}...`);
+        
+        // Execute scraping
+        const result = await scrapeUrl(url, { timeout: maxTimeout });
         
         if (result.success) {
-            const elapsed = Date.now() - startTime;
-            
-            console.log(`\n${'🎭'.repeat(25)}`);
-            console.log(`🎭 PLAYWRIGHT SUCCESS - Total: ${elapsed}ms`);
-            console.log(`🔗 Final URL: ${result.url?.substring(0, 120)}...`);
-            console.log(`📄 HTML: ${result.html?.length || 0} bytes`);
-            console.log(`🎯 Has ssd: ${result.hasSSd ? 'YES ✅' : 'NO ❌'}`);
-            console.log(`${'🎭'.repeat(25)}\n`);
+            const totalElapsed = Date.now() - startTime;
+            console.log(`✅ [${requestId}] Request completed successfully in ${totalElapsed}ms`);
             
             res.json({
                 status: 'ok',
-                message: 'Playwright Success',
+                message: 'Scraping completed successfully',
                 solution: {
-                    url: result.url || url,
+                    url: result.url,
                     status: 200,
                     response: result.html,
                     cookies: result.cookies || [],
-                    userAgent: 'Mozilla/5.0'
+                    userAgent: 'Mozilla/5.0 (Cloud Run Optimized Puppeteer)'
                 },
                 startTimestamp: startTime,
                 endTimestamp: Date.now(),
-                version: '7.0.0-PLAYWRIGHT-STEALTH-EDITION',
+                version: '6.0.0-cloudrun-final',
                 hasSSd: result.hasSSd || false,
-                scrapingType: result.scrapingType,
-                bypassSuccess: result.bypassSuccess
+                requestId,
+                elapsed: totalElapsed
             });
         } else {
-            throw new Error(result.error || 'Playwright error');
+            throw new Error(result.error || 'Unknown scraping error occurred');
         }
         
     } catch (error) {
-        console.error(`🎭 PLAYWRIGHT REQUEST FAILED:`, error.message);
+        const elapsed = Date.now() - startTime;
+        console.error(`❌ [${requestId}] Request failed after ${elapsed}ms:`, error.message);
         
         res.status(500).json({
             status: 'error',
             message: error.message,
-            solution: null
+            solution: null,
+            requestId,
+            elapsed,
+            timestamp: new Date().toISOString()
         });
     }
 });
 
-// Health check
+// Health check endpoint
 app.get('/health', async (req, res) => {
     const memory = process.memoryUsage();
+    const uptime = process.uptime();
     
-    res.json({
-        status: 'playwright-stealth-ready',
-        uptime: Math.round(process.uptime()) + 's',
-        browsers: browserPool.length,
-        activeBrowsers: browserPool.filter(b => b.busy).length,
-        browserMode: browserPool.length > 0 ? (browserPool[0].isHeadless ? 'headless' : 'headful') : 'unknown',
+    let browserInfo = {
+        active: false,
+        ageSeconds: 0,
+        error: null
+    };
+    
+    try {
+        if (globalBrowser) {
+            const pages = await globalBrowser.pages();
+            browserInfo = {
+                active: true,
+                ageSeconds: Math.round((Date.now() - browserStartTime) / 1000),
+                pagesCount: pages.length,
+                activePagesCount
+            };
+        }
+    } catch (error) {
+        browserInfo.error = error.message;
+        browserInfo.active = false;
+    }
+    
+    const healthData = {
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: Math.round(uptime) + 's',
+        browser: browserInfo,
         memory: {
             used: Math.round(memory.heapUsed / 1024 / 1024) + 'MB',
-            total: Math.round(memory.heapTotal / 1024 / 1024) + 'MB'
+            total: Math.round(memory.heapTotal / 1024 / 1024) + 'MB',
+            rss: Math.round(memory.rss / 1024 / 1024) + 'MB',
+            external: Math.round(memory.external / 1024 / 1024) + 'MB'
         },
-        features: [
-            '🎭 Playwright + Stealth Plugin',
-            '🖥️ Headful mode with XVFB fallback',
-            '⚡ WebSocket connection (faster)',
-            '🔧 Advanced anti-detection',
-            '🍪 Smart context management',
-            '⏰ Patient bypass strategy'
-        ]
-    });
+        limits: {
+            maxConcurrentPages: MAX_CONCURRENT_PAGES,
+            pageTimeout: PAGE_TIMEOUT + 'ms'
+        },
+        version: '6.0.0-cloudrun-final'
+    };
+    
+    res.json(healthData);
 });
 
-// Root page
+// Service info endpoint
 app.get('/', (req, res) => {
     const memory = process.memoryUsage();
-    const browserMode = browserPool.length > 0 ? (browserPool[0].isHeadless ? 'Headless' : 'Headful') : 'Unknown';
+    const browserStatus = globalBrowser ? 
+        `Active (${Math.round((Date.now() - browserStartTime)/1000)}s old)` : 
+        'Inactive';
     
     res.send(`
-        <h1>🎭 Playwright Stealth Edition v7.0</h1>
-        <p><strong>Status:</strong> Armed with Microsoft's finest + Stealth</p>
-        <p><strong>Browser Mode:</strong> ${browserMode}</p>
-        <p><strong>Memory:</strong> ${Math.round(memory.heapUsed / 1024 / 1024)}MB</p>
-        
-        <h3>🎭 Playwright Advantages:</h3>
-        <ul>
-            <li>✅ WebSocket connection (faster than HTTP)</li>
-            <li>✅ Microsoft backing & active development</li>
-            <li>✅ Built-in stealth capabilities</li>
-            <li>✅ Better performance than Puppeteer</li>
-            <li>✅ Advanced context management</li>
-            <li>✅ Automatic waiting & retries</li>
-            <li>✅ Cross-browser support</li>
-        </ul>
-        
-        <h3>🚀 Why Playwright Beats Puppeteer:</h3>
-        <ul>
-            <li>📡 WebSocket vs HTTP communication</li>
-            <li>⚡ Faster navigation & interaction</li>
-            <li>🛡️ Better stealth out of the box</li>
-            <li>🔧 More advanced debugging tools</li>
-            <li>🎯 Built-in wait strategies</li>
-        </ul>
-        
-        <h3>📖 Usage:</h3>
-        <p><strong>URL Mode:</strong> <code>{"fullScraping": false}</code></p>
-        <p><strong>Full Mode:</strong> <code>{"fullScraping": true, "maxTimeout": 240000}</code></p>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Cloud Run Puppeteer Scraper</title>
+            <meta charset="UTF-8">
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+                .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                .status { background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 15px 0; }
+                .endpoints { background: #f0f8ff; padding: 15px; border-radius: 5px; }
+                h1 { color: #1a73e8; margin: 0 0 20px 0; }
+                .metric { display: inline-block; margin: 10px 20px 10px 0; }
+                code { background: #f1f3f4; padding: 2px 8px; border-radius: 3px; font-size: 14px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🚀 Cloud Run Puppeteer Scraper v6.0</h1>
+                
+                <div class="status">
+                    <h3>📊 Current Status</h3>
+                    <div class="metric"><strong>Service:</strong> Running</div>
+                    <div class="metric"><strong>Browser:</strong> ${browserStatus}</div>
+                    <div class="metric"><strong>Active Pages:</strong> ${activePagesCount}/${MAX_CONCURRENT_PAGES}</div>
+                    <div class="metric"><strong>Memory Usage:</strong> ${Math.round(memory.rss/1024/1024)}MB</div>
+                    <div class="metric"><strong>Uptime:</strong> ${Math.round(process.uptime())}s</div>
+                </div>
+                
+                <div class="endpoints">
+                    <h3>🔗 Available Endpoints</h3>
+                    <p><code>POST /v1</code> - Main scraping endpoint</p>
+                    <p><code>GET /health</code> - Health check with detailed metrics</p>
+                    <p><code>GET /</code> - This service information page</p>
+                </div>
+                
+                <div style="margin-top: 20px; padding: 15px; background: #fff3cd; border-radius: 5px;">
+                    <h4>💡 Usage Example:</h4>
+                    <code>
+                        curl -X POST ${req.protocol}://${req.get('host')}/v1 \\<br>
+                        &nbsp;&nbsp;-H "Content-Type: application/json" \\<br>
+                        &nbsp;&nbsp;-d '{"url": "https://example.com"}'
+                    </code>
+                </div>
+                
+                <div style="margin-top: 20px; color: #666; font-size: 12px;">
+                    <p>Optimized for Google Cloud Run • Auto-scaling • Cloudflare bypass • Resource efficient</p>
+                </div>
+            </div>
+        </body>
+        </html>
     `);
 });
 
-// Start server
-app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`
-╔═══════════════════════════════════════════════╗
-║       🎭 PLAYWRIGHT STEALTH EDITION v7.0     ║
-║         Microsoft Power + Stealth Plugin     ║
-║              Port: ${PORT}                       ║
-║        Better than Puppeteer & Selenium      ║
-║           WebSocket > HTTP Requests           ║
-╚═══════════════════════════════════════════════╝
-    `);
+// Graceful shutdown handler
+const gracefulShutdown = async (signal) => {
+    console.log(`\n🛑 ${signal} signal received, initiating graceful shutdown...`);
     
-    console.log('🎭 Loading Playwright stealth arsenal...');
-    await initBrowserPool();
+    // Stop accepting new connections
+    server.close(() => {
+        console.log('📭 HTTP server closed to new requests');
+    });
     
-    setInterval(playwrightMemoryCleanup, 60000);
-    console.log('🚀 PLAYWRIGHT STEALTH READY FOR CLOUDFLARE DESTRUCTION!');
-});
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-    console.log('🎭 Playwright shutdown sequence...');
-    for (const browserObj of browserPool) {
-        await browserObj.browser.close().catch(() => {});
+    // Close browser if active
+    if (globalBrowser) {
+        try {
+            await globalBrowser.close();
+            console.log('🌐 Browser instance closed successfully');
+        } catch (error) {
+            console.error('❌ Error closing browser:', error.message);
+        }
     }
-    browserPool = [];
+    
+    console.log('✅ Graceful shutdown completed');
     process.exit(0);
+};
+
+// Start the server
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`
+╔════════════════════════════════════════════════════════════╗
+║                                                            ║
+║   🚀 Cloud Run Puppeteer Scraper v6.0 READY!            ║
+║                                                            ║
+║   📡 Port: ${PORT}                                           ║
+║   🌐 Environment: ${process.env.NODE_ENV || 'production'}                              ║
+║   🧠 Max Concurrent Pages: ${MAX_CONCURRENT_PAGES}                              ║
+║   ⏱️  Page Timeout: ${PAGE_TIMEOUT/1000} seconds                               ║
+║   🔧 Optimized for Google Cloud Run                       ║
+║                                                            ║
+║   Ready to handle production traffic! 🎯                  ║
+║                                                            ║
+╚════════════════════════════════════════════════════════════╝
+    `);
 });
 
+// Signal handlers for graceful shutdown
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Global error handlers
 process.on('uncaughtException', (error) => {
-    console.error('🎭 Playwright Exception:', error.message);
-    if (global.gc) global.gc();
+    console.error('💥 Uncaught Exception:', error.message);
+    console.error('Stack:', error.stack);
 });
 
-process.on('unhandledRejection', (error) => {
-    console.error('🎭 Playwright Rejection:', error.message);
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('💥 Unhandled Promise Rejection:', reason);
+    console.error('Promise:', promise);
 });
