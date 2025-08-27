@@ -1,28 +1,9 @@
 {
-  "name": "puppeteer-scraper-cloudrun-optimized",
-  "version": "6.0.0",
-  "description": "Optimized Puppeteer scraper for Google Cloud Run",
+  "name": "puppeteer-simple",
+  "version": "1.0.0",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "NODE_ENV=development node server.js",
-    "test": "echo \"Test: curl -X POST -H 'Content-Type: application/json' -d '{\\\"url\\\":\\\"https://httpbin.org/get\\\"}' http://localhost:8080/v1\" && exit 0"
-  },
   "dependencies": {
-    "express": "^4.19.2",
-    "puppeteer": "^22.15.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "keywords": [
-    "puppeteer",
-    "scraper",
-    "cloud-run",
-    "scaling",
-    "automation",
-    "web-scraping"
-  ],
-  "author": "Your Name",
-  "license": "MIT"
+    "express": "4.19.2",
+    "puppeteer": "22.15.0"
+  }
 }
