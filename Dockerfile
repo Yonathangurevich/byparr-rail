@@ -4,11 +4,10 @@ FROM node:20-slim
 # Set working directory
 WORKDIR /usr/src/app
 
-# Environment variables for Cloud Run
+# Environment variables for Cloud Run (removed problematic NODE_OPTIONS)
 ENV PUPPETEER_SKIP_DOWNLOAD=false
 ENV NODE_ENV=production
 ENV PORT=8080
-ENV NODE_OPTIONS="--max-old-space-size=768 --optimize-for-size"
 
 # Install system dependencies required by Puppeteer
 RUN apt-get update && apt-get install -y \
@@ -32,24 +31,11 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     libnss3 \
     libcups2 \
-    libxrandr2 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libatk1.0-0 \
-    libcairo-gobject2 \
-    libgtk-3-0 \
-    libgdk-pixbuf2.0-0 \
     fonts-liberation \
     libappindicator3-1 \
-    libasound2 \
     libatk-bridge2.0-0 \
     libdrm2 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
     libgbm1 \
-    libxss1 \
-    libgconf-2-4 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy package files first for better layer caching
